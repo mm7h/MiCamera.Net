@@ -1,0 +1,31 @@
+{
+  "Miloco": {
+    "BaseUrl": "https://miloco:5530",
+    "Username": "admin",
+    "Password": "",
+    "AllowInvalidServerCertificate": true,
+    "RequestTimeout": 15
+  },
+  "Streaming": {
+    "ConnectTimeout": 10,
+    "FirstKeyFrameTimeout": 60,
+    "IdleTimeout": 60,
+    "MaxMessageBytes": 4194304,
+    "SubscriberBufferCapacity": 32
+  },
+  "Reconnect": {
+    "InitialDelay": 1,
+    "MaximumDelay": 30,
+    "BackoffMultiplier": 2.0,
+    "JitterRatio": 0.2
+  },
+  "Streams": [
+    {
+      "StreamId": "living-room",
+      "CameraDeviceId": "replace-with-your-camera-did",
+      "Channel": 0,
+      "Codec": "H265",
+      "NominalFrameRate": 25
+    }
+  ]
+}
