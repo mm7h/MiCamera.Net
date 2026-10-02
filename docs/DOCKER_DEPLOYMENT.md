@@ -4,6 +4,8 @@
 
 三项常驻服务：社区基础版 Miloco、MiCamera.Net 桥接服务、Nginx 前端。Miloco 保留上游基础后台和授权 UI，不另行裁剪源码；不启动 AI 模型、OpenClaw、Python micam 或 go2rtc。首版仅视频、截图和浏览器预览，没有音频、录像、对讲、云台或异地访问。
 
+桥接服务的成本取决于观看状态：没有 WebRTC 观看者时只按关键帧解码以维护截图，观看时才按需把 H.265 转成 H.264，因此默认把浏览器收到的 H.264 限制在 1920×1080（`MediaServer.FFmpeg` 的 `H264MaxWidth`/`H264MaxHeight`）。四核低功耗主机（例如 Intel N100）可同时运行三项服务并实时预览；如果保留 4K 输出（把两个值设为 0 或 3840×2160），CPU 转码通常无法达到实时速度，画面会越播越延迟。
+
 服务器、摄像头和浏览器应在同一可互通家庭局域网；访客 Wi-Fi、AP 客户端隔离及 VLAN 防火墙可能导致失败。需要联网下载 Docker、NuGet、npm、Debian 依赖，并访问小米授权服务；不是离线安装包。H.265 浏览器预览使用 CPU 转码，不承诺任意服务器的并发路数。
 
 支持目标为 Linux amd64/arm64、本机 rootful Docker Unix socket；不支持远程 Docker context、rootless Docker、Windows Docker 或未配置媒体网络的云服务器。安装 Docker Engine 和 Compose v2.20+；脚本使用 Bash 4+、iproute2（ip/ss）、awk、coreutils、util-linux（flock）。缺少工具时脚本提示，不自动安装系统软件或修改防火墙。
@@ -26,9 +28,9 @@ bash deploy.sh
 3. 在自己的电脑浏览器打开向导给出的 `https://服务器IP:8000`，确认这是本机 Miloco 后处理自签名证书提示，设置本地密码并绑定小米账号。脚本不会尝试打开 SSH 服务器的浏览器。
 4. 隐藏输入刚设置的 **Miloco 本地密码，不是小米账号密码**。脚本生成小写 MD5，分别检查本地登录和 `data.is_logged_in`。失败可重新检查授权、重新输入密码或退出后续跑。
 5. 从 Miloco 返回的摄像头列表选择设备，或手工输入 DID。默认通道 0、H.265、名义帧率 30；按实际摄像头输出选择编码。设备离线不等于不能配置，但就绪检查不会通过。
-6. 校验配置并启动桥接服务，检查近期视频和截图状态。打开 `http://服务器IP:5081`，在终端执行 `bash deploy.sh credentials`，将显示的 API Token 输入前端后验证播放。
+6. 校验配置并启动桥接服务，检查近期视频和截图状态。打开 `http://服务器IP:5081` 验证播放；前端容器通过 `http://服务器IP:5081/api` 同源代理访问桥接服务并自动携带 Bearer Token，浏览器无需输入 Token，也不再需要跨源 CORS。
 
-服务输出不含自动打印的凭据；`credentials` 只允许交互终端显式显示 Token 和 RTSP 凭据，不显示 Miloco 密码。前端 Token 只存在浏览器内存中，刷新后重新输入。桥接镜像不包含示例 JSON，运行时必须获得向导创建的外部只读配置和 secrets；入口仅在容器内将它们合成为权限 0600 的临时 JSON，并以该路径启动应用。
+服务输出不含自动打印的凭据；`credentials` 只允许交互终端显式显示 Token 和 RTSP 凭据，不显示 Miloco 密码。前端容器在启动时从只读挂载的 `rtsp_api_token` secret 生成 Nginx 配置，Token 不进入镜像层，也不下发到浏览器；页面刷新不会丢失访问能力。桥接镜像不包含示例 JSON，运行时必须获得向导创建的外部只读配置和 secrets；入口仅在容器内将它们合成为权限 0600 的临时 JSON，并以该路径启动应用。
 
 初始化未完成或视频检查失败，脚本退出非零，但保留已有服务、授权和配置；再次执行可以继续。不要把脚本用 `sudo`/普通用户交替运行，以免配置目录的文件所有权不一致。
 
@@ -50,7 +52,7 @@ bash deploy.sh up --non-interactive
 | --- | --- | --- |
 | Miloco | `https://服务器IP:8000` | Miloco 本地登录及小米账号绑定 |
 | HTTP API | `http://服务器IP:5080` | Bearer Token |
-| 前端 | `http://服务器IP:5081` | 静态页面；不内置 Token |
+| 前端 | `http://服务器IP:5081` | 静态页面；`/api` 同源代理并自动附加 Token |
 | RTSP | `rtsp://服务器IP:8554/live/流名称` | Digest；仅 RTP over TCP |
 | WebRTC 媒体 | UDP 50000–50100 | 与浏览器进行 ICE/DTLS/SRTP |
 

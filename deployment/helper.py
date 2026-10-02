@@ -141,7 +141,10 @@ def write_secret(name, value):
         raise DeploymentError(f"secret 值格式无效：{name}。")
     if not value and name != "miloco_password_md5":
         raise DeploymentError(f"secret 值不能为空：{name}。")
-    atomic_write(secret_path(name), value, 0o600)
+    # Docker Compose mounts file-backed secrets with their host file mode.  The
+    # bridge runs as an unprivileged UID, while the enclosing secrets directory
+    # remains 0700, so the file itself must be readable inside that mount.
+    atomic_write(secret_path(name), value, 0o644)
 
 
 def ensure_secret(name, value):
@@ -259,7 +262,8 @@ def initialize(lan_ip):
                            "IceServers": [], "IceGatheringTimeout": 5, "PendingSessionTimeout": 30,
                            "DisconnectedGracePeriod": 15, "TranscoderIdleTimeout": 10, "MaxPeersPerStream": 4},
                 "FFmpeg": {"Path": "/app/native", "H264EncoderName": "libx264", "H264Bitrate": 2500000,
-                           "H264Preset": "veryfast", "KeyFrameInterval": 2},
+                           "H264Preset": "veryfast", "H264MaxWidth": 1920, "H264MaxHeight": 1080,
+                           "KeyFrameInterval": 2},
                 "Snapshot": {"Enabled": True, "JpegQuality": 85}}}, indent=2) + "\n", 0o644)
 
 

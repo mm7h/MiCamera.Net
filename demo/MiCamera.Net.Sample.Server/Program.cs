@@ -6,12 +6,20 @@ using Microsoft.Extensions.Hosting;
 
 try
 {
+    string configPath;
+#if DEBUG
+    // Debug runs fall back to the configuration next to the application so local debugging
+    // needs no command-line argument.
+    configPath = Path.Combine(AppContext.BaseDirectory, "Configs", "MiCameraConfig.json");
+#else
     if (args.Length != 1)
     {
         throw new InvalidOperationException("Usage: MiCamera.Net.Sample.Server <path-to-MiCameraConfig.json>");
     }
 
-    SampleServerConfiguration configuration = SampleServerConfiguration.Load(args[0]);
+    configPath = args[0];
+#endif
+    SampleServerConfiguration configuration = SampleServerConfiguration.Load(configPath);
 
     using IHost host = MiCameraEngineFactory
         .CreateServerBuilder()

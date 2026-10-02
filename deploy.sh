@@ -231,8 +231,9 @@ summary() {
     say "前端：http://$LAN_IP:5081"
     say "Miloco：https://$LAN_IP:8000"
     say "RTSP：rtsp://$LAN_IP:8554/live/{streamId}（客户端须使用 TCP 和 Digest 认证）"
-    say '凭据已保存在 .deploy/secrets。运行 bash deploy.sh credentials 在终端查看后端 Token 和 RTSP 凭据。'
-    say '浏览器输入 Token 后仍须确认实际画面；服务就绪不等于 WebRTC 端到端验收完成。'
+    say '凭据已保存在 .deploy/secrets。运行 bash deploy.sh credentials 在终端查看 RTSP 凭据。'
+    say '前端通过内置同源代理访问后端，浏览器无需输入 Token。'
+    say '打开页面后仍须确认实际画面；服务就绪不等于 WebRTC 端到端验收完成。'
     say '防火墙须允许可信局域网访问 TCP 8000/5080/5081/8554 和 UDP 50000–50100。脚本不会修改防火墙。'
 }
 

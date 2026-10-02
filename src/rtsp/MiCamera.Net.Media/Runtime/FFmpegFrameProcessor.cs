@@ -13,6 +13,15 @@ namespace MiCamera.Net.Media.Runtime;
 /// </summary>
 internal unsafe sealed class FFmpegFrameProcessor : IDisposable
 {
+    /// <summary>AV_FRAME_FLAG_KEY from libavutil/frame.h, which these bindings do not expose.</summary>
+    private const int KeyFrameFlag = 1 << 1;
+
+    /// <summary>
+    /// Never let key frames dominate the stream: a host that encodes below the nominal frame
+    /// rate would otherwise turn every frame into an expensive intra frame and slow down further.
+    /// </summary>
+    private const int MinimumFramesBetweenKeyFrames = 8;
+
     private readonly string _streamId;
     private readonly VideoCodec _sourceCodec;
     private readonly uint _frameDuration;
@@ -31,6 +40,11 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
     private SwsContext* _h264Converter;
     private int _width;
     private int _height;
+    private int _h264Width;
+    private int _h264Height;
+    private long _lastKeyFrameTicks;
+    private long _framesSinceKeyFrame;
+    private volatile bool _keyFrameRequested;
     private bool _disposed;
 
     private FFmpegFrameProcessor(
@@ -134,6 +148,15 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         return new ProcessResult(snapshot, transcoded);
     }
 
+    /// <summary>
+    /// Forces the next encoded frame to be a key frame so a new WebRTC viewer does not have to
+    /// wait for the encoder's own key frame cadence.
+    /// </summary>
+    public void RequestKeyFrame()
+    {
+        this._keyFrameRequested = true;
+    }
+
     public void StopH264Transcoding()
     {
         ObjectDisposedException.ThrowIf(this._disposed, this);
@@ -202,6 +225,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this.EnsureEncoders();
         this.EnsureH264Encoder();
         this.CopyDecodedFrameTo(this._h264Frame, this._h264Converter, source.Timestamp90Khz);
+        this.ApplyKeyFrameRequest();
 
         ffmpeg.av_packet_unref(this._h264Packet);
         ThrowIfError(ffmpeg.avcodec_send_frame(this._h264Encoder, this._h264Frame), "encode H.264 frame");
@@ -225,6 +249,35 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Keeps key frames bounded by wall-clock time instead of only by encoded frame count.
+    /// A host that cannot reach the nominal frame rate would otherwise leave a viewer without
+    /// a usable random access point for many seconds, which looks like a frozen preview.
+    /// </summary>
+    private void ApplyKeyFrameRequest()
+    {
+        long now = Environment.TickCount64;
+        long interval = (long)this._options.KeyFrameInterval.TotalMilliseconds;
+        this._framesSinceKeyFrame++;
+        bool due = this._keyFrameRequested
+            || (interval > 0
+                && this._framesSinceKeyFrame >= MinimumFramesBetweenKeyFrames
+                && now - this._lastKeyFrameTicks >= interval);
+
+        this._h264Frame->pict_type = due ? AVPictureType.AV_PICTURE_TYPE_I : AVPictureType.AV_PICTURE_TYPE_NONE;
+        if (due)
+        {
+            this._h264Frame->flags |= KeyFrameFlag;
+            this._lastKeyFrameTicks = now;
+            this._framesSinceKeyFrame = 0;
+            this._keyFrameRequested = false;
+        }
+        else
+        {
+            this._h264Frame->flags &= ~KeyFrameFlag;
+        }
     }
 
     private void EnsureEncoders()
@@ -260,14 +313,15 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
 
         this._width = this._decodedFrame->width;
         this._height = this._decodedFrame->height;
-        this._jpegFrame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUVJ420P, "JPEG conversion frame");
-        this._jpegConverter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUVJ420P, "JPEG pixel converter");
+        (this._h264Width, this._h264Height) = GetH264OutputSize(this._width, this._height, this._options);
+        this._jpegFrame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, "JPEG conversion frame");
+        this._jpegConverter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, "JPEG pixel converter");
 
         AVCodec* jpegCodec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_MJPEG);
         EnsureAllocated(jpegCodec, "MJPEG encoder");
         this._jpegEncoder = ffmpeg.avcodec_alloc_context3(jpegCodec);
         EnsureAllocated(this._jpegEncoder, "MJPEG encoder context");
-        this.ConfigureVideoEncoder(this._jpegEncoder, AVPixelFormat.AV_PIX_FMT_YUVJ420P);
+        this.ConfigureVideoEncoder(this._jpegEncoder, AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height);
         this._jpegEncoder->qmin = Math.Clamp(31 - (this._jpegQuality * 30 / 100), 1, 31);
         this._jpegEncoder->qmax = this._jpegEncoder->qmin;
         ThrowIfError(ffmpeg.avcodec_open2(this._jpegEncoder, jpegCodec, null), "open MJPEG encoder");
@@ -291,9 +345,9 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         EnsureAllocated(codec, $"H.264 encoder '{this._options.H264EncoderName}'");
         this._h264Encoder = ffmpeg.avcodec_alloc_context3(codec);
         EnsureAllocated(this._h264Encoder, "H.264 encoder context");
-        if (this._h264Frame is null) this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, "H.264 conversion frame");
-        if (this._h264Converter is null) this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, "H.264 pixel converter");
-        this.ConfigureVideoEncoder(this._h264Encoder, AVPixelFormat.AV_PIX_FMT_YUV420P);
+        if (this._h264Frame is null) this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, "H.264 conversion frame");
+        if (this._h264Converter is null) this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, "H.264 pixel converter");
+        this.ConfigureVideoEncoder(this._h264Encoder, AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height);
         this._h264Encoder->bit_rate = this._options.H264Bitrate;
         this._h264Encoder->gop_size = Math.Max(1, (int)Math.Round(90_000d / this._frameDuration * this._options.KeyFrameInterval.TotalSeconds));
         this._h264Encoder->max_b_frames = 0;
@@ -307,37 +361,37 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         EnsureAllocated(this._h264Packet, "H.264 packet");
     }
 
-    private void ConfigureVideoEncoder(AVCodecContext* context, AVPixelFormat pixelFormat)
+    private void ConfigureVideoEncoder(AVCodecContext* context, AVPixelFormat pixelFormat, int width, int height)
     {
-        context->width = this._width;
-        context->height = this._height;
+        context->width = width;
+        context->height = height;
         context->pix_fmt = pixelFormat;
         context->time_base = new AVRational { num = (int)this._frameDuration, den = 90_000 };
         context->framerate = new AVRational { num = 90_000, den = (int)this._frameDuration };
     }
 
-    private AVFrame* CreateConversionFrame(AVPixelFormat pixelFormat, string name)
+    private AVFrame* CreateConversionFrame(AVPixelFormat pixelFormat, int width, int height, string name)
     {
         AVFrame* frame = ffmpeg.av_frame_alloc();
         EnsureAllocated(frame, name);
         frame->format = (int)pixelFormat;
-        frame->width = this._width;
-        frame->height = this._height;
+        frame->width = width;
+        frame->height = height;
         ThrowIfError(ffmpeg.av_frame_get_buffer(frame, 32), $"allocate {name}");
         return frame;
     }
 
-    private SwsContext* CreateConverter(AVPixelFormat destinationFormat, string name)
+    private SwsContext* CreateConverter(AVPixelFormat destinationFormat, int width, int height, string name)
     {
         SwsContext* converter = ffmpeg.sws_getCachedContext(
             null,
             this._width,
             this._height,
             (AVPixelFormat)this._decodedFrame->format,
-            this._width,
-            this._height,
+            width,
+            height,
             destinationFormat,
-            ffmpeg.SWS_BILINEAR,
+            width == this._width && height == this._height ? ffmpeg.SWS_BILINEAR : ffmpeg.SWS_BICUBIC,
             null,
             null,
             null);
@@ -357,6 +411,27 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             target->data,
             target->linesize);
         target->pts = timestamp90Khz;
+    }
+
+    internal static (int Width, int Height) GetH264OutputSize(int sourceWidth, int sourceHeight, MediaProcessingOptions options)
+    {
+        int maxWidth = options.H264MaxWidth;
+        int maxHeight = options.H264MaxHeight;
+        if (maxWidth <= 0 || maxHeight <= 0 || (sourceWidth <= maxWidth && sourceHeight <= maxHeight))
+        {
+            return (sourceWidth, sourceHeight);
+        }
+
+        double scale = Math.Min((double)maxWidth / sourceWidth, (double)maxHeight / sourceHeight);
+        return (
+            MakeEven((int)Math.Round(sourceWidth * scale)),
+            MakeEven((int)Math.Round(sourceHeight * scale)));
+    }
+
+    private static int MakeEven(int value)
+    {
+        int even = value % 2 == 0 ? value : value - 1;
+        return Math.Max(2, even);
     }
 
     private static void ThrowIfError(int error, string operation)

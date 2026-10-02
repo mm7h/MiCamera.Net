@@ -60,6 +60,16 @@ internal static class MiCameraRtspOptionsValidator
             throw new ArgumentException("One or more RTSP service timing or media options are invalid.", nameof(options));
         }
 
+        if ((options.Media.H264MaxWidth == 0) != (options.Media.H264MaxHeight == 0) ||
+            options.Media.H264MaxWidth < 0 || options.Media.H264MaxHeight < 0 ||
+            options.Media.H264MaxWidth % 2 == 1 || options.Media.H264MaxHeight % 2 == 1 ||
+            options.Media.H264MaxWidth is > 0 and < 64 || options.Media.H264MaxHeight is > 0 and < 64)
+        {
+            throw new ArgumentException(
+                "Media.H264MaxWidth and Media.H264MaxHeight must both be zero (source resolution) or an even pair of at least 64.",
+                nameof(options));
+        }
+
         bool httpLoopback = string.Equals(httpUri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
             (IPAddress.TryParse(httpUri.Host, out IPAddress? httpAddress) && IPAddress.IsLoopback(httpAddress));
         if ((!IPAddress.IsLoopback(rtspAddress) && (string.IsNullOrWhiteSpace(options.Rtsp.Username) || string.IsNullOrWhiteSpace(options.Rtsp.Password))) ||

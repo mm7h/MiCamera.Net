@@ -13,7 +13,9 @@ RUN mkdir -p /out/licenses && cp /root/.nuget/packages/sipsorcery/10.0.16/LICENS
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
     PYTHONDONTWRITEBYTECODE=1
-RUN attempt=1; \
+# The target LAN blocks deb.debian.org but permits this signed Debian mirror.
+RUN sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+    attempt=1; \
     until apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl ffmpeg python3 libicu76 libssl3t64 libstdc++6 libgcc-s1 tzdata; do \
         if [ "$attempt" -ge 3 ]; then exit 1; fi; \

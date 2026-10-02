@@ -73,6 +73,17 @@ export default function App(): React.JSX.Element {
         setSnapshotHistory([]);
     }, []);
 
+    const removeSnapshotFromHistory = useCallback((itemId: number): void => {
+        const item = snapshotHistoryRef.current.find((entry) => entry.id === itemId);
+        if (item === undefined) {
+            return;
+        }
+
+        URL.revokeObjectURL(item.url);
+        snapshotHistoryRef.current = snapshotHistoryRef.current.filter((entry) => entry.id !== itemId);
+        setSnapshotHistory(snapshotHistoryRef.current);
+    }, []);
+
     const addSnapshotToHistory = useCallback((streamId: string, blob: Blob): void => {
         const item: SnapshotHistoryItem = {
             id: ++nextSnapshotIdRef.current,
@@ -295,6 +306,7 @@ export default function App(): React.JSX.Element {
                     loading={snapshotLoading}
                     message={snapshotError}
                     onRefresh={() => void refreshSnapshot()}
+                    onDeleteSnapshot={removeSnapshotFromHistory}
                 />
             </div>
 
@@ -348,6 +360,11 @@ function getDefaultApiUrl(): string {
     const configuredUrl = import.meta.env.VITE_MICAMERA_API_URL?.trim();
     if (configuredUrl !== undefined && configuredUrl.length > 0) {
         return configuredUrl;
+    }
+
+    // The deployment image serves this app and proxies /api on the same origin.
+    if (import.meta.env.VITE_MICAMERA_SAME_ORIGIN_API === "true") {
+        return window.location.origin;
     }
 
     const protocol = window.location.protocol === "https:" ? "https:" : "http:";

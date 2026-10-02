@@ -68,7 +68,9 @@ services:
     restart: unless-stopped
     logging: *logging
     healthcheck:
-      test: ["CMD", "python3", "/app/deployment/helper.py", "live"]
+      # helper.py needs the API base URL and Token file, which are not service environment
+      # values; passing them inline keeps the container environment unchanged.
+      test: ["CMD-SHELL", "RTSP_HTTP_LISTEN_URL=http://${LAN_IP}:5080 RTSP_API_TOKEN_FILE=/run/secrets/rtsp_api_token python3 /app/deployment/helper.py live"]
       interval: 15s
       timeout: 5s
       start_period: 30s
@@ -81,6 +83,11 @@ services:
       dockerfile: deployment/Dockerfile.web
     ports:
       - "${LAN_IP}:5081:8080"
+    environment:
+      MICAMERA_LAN_IP: ${LAN_IP:?Run bash deploy.sh first}
+      RTSP_API_TOKEN_FILE: /run/secrets/rtsp_api_token
+    secrets:
+      - rtsp_api_token
     restart: unless-stopped
     logging: *logging
     healthcheck:

@@ -202,6 +202,8 @@ a:focus-visible {
 .camera-list {
     display: grid;
     flex: 1;
+    grid-auto-rows: min-content;
+    align-content: start;
     gap: 0.65rem;
     min-height: 0;
     overflow-y: auto;
@@ -266,15 +268,17 @@ a:focus-visible {
 
 .video-frame {
     display: grid;
-    flex: 0 0 30rem;
-    height: 30rem;
+    flex: 0 0 auto;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    max-height: 30rem;
     min-height: 0;
     place-items: center;
     overflow: hidden;
     border: 1px solid #aec9e8;
     border-radius: 0.7rem;
     margin-top: 1rem;
-    background: #eaf2fc;
+    background: #0b1220;
 }
 
 .snapshot-frame {
@@ -348,6 +352,7 @@ a:focus-visible {
     display: grid;
     flex: 1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
     gap: 0.75rem;
     min-height: 0;
     overflow-y: auto;
@@ -386,10 +391,37 @@ a:focus-visible {
     font-size: 0.7rem;
 }
 
-.history-item-footer a {
+.history-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border: 0;
+    border-radius: 0.4rem;
+    padding: 0;
     color: #316dac;
-    font-weight: 750;
+    background: transparent;
     text-decoration: none;
+}
+
+.icon-button:hover {
+    background: #e4f0ff;
+}
+
+.icon-button.danger {
+    color: #b3453f;
+}
+
+.icon-button.danger:hover {
+    background: #fdeeec;
 }
 
 .image-dialog-backdrop {

@@ -11,7 +11,8 @@ interface VideoPreviewProps {
 }
 
 export function VideoPreview({ camera, state, videoRef, onStart, onStop }: VideoPreviewProps): React.JSX.Element {
-    const canStart = camera !== null && camera.webRtcAvailable && state.phase !== "connecting";
+    const sessionActive = state.phase === "connecting" || state.phase === "connected";
+    const canStart = camera !== null && camera.webRtcAvailable && !sessionActive;
 
     return (
         <section className="preview-panel card">
@@ -28,9 +29,9 @@ export function VideoPreview({ camera, state, videoRef, onStart, onStop }: Video
             {state.message !== null && <p className={`connection-message ${state.phase}`}>{state.message}</p>}
             <div className="button-row">
                 <button className="primary" type="button" onClick={onStart} disabled={!canStart}>
-                    开始预览
+                    {state.phase === "connecting" ? "正在连接…" : "开始预览"}
                 </button>
-                <button className="secondary" type="button" onClick={onStop} disabled={state.phase === "idle"}>
+                <button className="secondary" type="button" onClick={onStop} disabled={!sessionActive}>
                     停止预览
                 </button>
             </div>

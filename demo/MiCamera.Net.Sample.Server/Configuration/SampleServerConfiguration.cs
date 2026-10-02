@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using MiCamera.Net.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
@@ -112,6 +112,8 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
                     H264EncoderName = FFmpeg.H264EncoderName,
                     H264Bitrate = FFmpeg.H264Bitrate,
                     H264Preset = FFmpeg.H264Preset,
+                    H264MaxWidth = FFmpeg.H264MaxWidth,
+                    H264MaxHeight = FFmpeg.H264MaxHeight,
                     KeyFrameInterval = FFmpeg.KeyFrameInterval
                 },
                 Rtsp = Rtsp,
@@ -127,6 +129,8 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         public string H264EncoderName { get; set; } = "libx264";
         public int H264Bitrate { get; set; } = 2_500_000;
         public string H264Preset { get; set; } = "veryfast";
+        public int H264MaxWidth { get; set; }
+        public int H264MaxHeight { get; set; }
         public TimeSpan KeyFrameInterval { get; set; } = TimeSpan.FromSeconds(2);
     }
 

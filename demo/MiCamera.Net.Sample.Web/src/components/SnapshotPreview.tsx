@@ -8,6 +8,7 @@ interface SnapshotPreviewProps {
     loading: boolean;
     message: string | null;
     onRefresh(): void;
+    onDeleteSnapshot(itemId: number): void;
 }
 
 export function SnapshotPreview({
@@ -16,7 +17,8 @@ export function SnapshotPreview({
     snapshotUrl,
     loading,
     message,
-    onRefresh
+    onRefresh,
+    onDeleteSnapshot
 }: SnapshotPreviewProps): React.JSX.Element {
     return (
         <section className="snapshot-panel card">
@@ -37,7 +39,7 @@ export function SnapshotPreview({
                 )}
             </div>
             {message !== null && <p className="connection-message error">{message}</p>}
-            <SnapshotHistory items={historyItems} />
+            <SnapshotHistory items={historyItems} onDelete={onDeleteSnapshot} />
         </section>
     );
 }

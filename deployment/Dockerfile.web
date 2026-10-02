@@ -2,6 +2,9 @@
 # the final Nginx stage still uses the requested target platform.
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS build
 ENV NPM_CONFIG_ENGINE_STRICT=true
+# The deployed frontend is served by the Nginx proxy above /api, so it defaults to
+# its own origin instead of a browser-visible API Token.
+ENV VITE_MICAMERA_SAME_ORIGIN_API=true
 WORKDIR /web
 COPY demo/MiCamera.Net.Sample.Web/package.json demo/MiCamera.Net.Sample.Web/package-lock.json ./
 RUN npm ci
@@ -9,5 +12,7 @@ COPY demo/MiCamera.Net.Sample.Web/ ./
 RUN npm run lint && npm test && npm run build
 
 FROM nginx:stable-alpine
-COPY deployment/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deployment/nginx.conf /etc/nginx/templates/default.conf.template
+COPY deployment/web-api-proxy.envsh /docker-entrypoint.d/16-micamera-api-proxy.envsh
+RUN chmod 0755 /docker-entrypoint.d/16-micamera-api-proxy.envsh
 COPY --from=build /web/dist/ /usr/share/nginx/html/

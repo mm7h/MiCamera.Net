@@ -22,6 +22,7 @@ internal sealed class StreamPipeline : IDisposable
     private readonly Dictionary<int, ReadOnlyMemory<byte>> _parameterSets = [];
     private FFmpegFrameProcessor? _processor;
     private Exception? _processorFailure;
+    private volatile bool _keyFrameRequested;
     private VideoSnapshot? _snapshot;
     private int _h264SubscriberCount;
     private bool _disposed;
@@ -61,6 +62,8 @@ internal sealed class StreamPipeline : IDisposable
         }
 
         Interlocked.Increment(ref this._h264SubscriberCount);
+        // Every new viewer needs a random access point as soon as possible.
+        this._keyFrameRequested = true;
         try
         {
             await foreach (VideoAccessUnit unit in this._h264Hub.SubscribeAsync(cancellationToken).ConfigureAwait(false))
@@ -146,6 +149,12 @@ internal sealed class StreamPipeline : IDisposable
                     lock (this._sync)
                     {
                         FFmpegFrameProcessor? processor = this.GetOrCreateProcessor();
+                        if (processor is not null && this._keyFrameRequested)
+                        {
+                            this._keyFrameRequested = false;
+                            processor.RequestKeyFrame();
+                        }
+
                         result = processor?.Process(unit, Volatile.Read(ref this._h264SubscriberCount) > 0);
                         if (result is not null) this._processorFailure = null;
                     }
