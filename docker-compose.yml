@@ -1,0 +1,104 @@
+name: micamera-net
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  miloco:
+    image: ghcr.io/miiot/miloco:260618@sha256:1627132b4364feea0a60d2c880bacdbea614904a04ec2d4d457143d2fb5f7b68
+    # Disable unbounded upstream file logs; retain Docker's rotated console logs.
+    # The upstream image accepts SECRET_KEY only through its environment, so read
+    # the granted Compose secret immediately before replacing this shell with Python.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - export SECRET_KEY="$$(cat "$$SECRET_KEY_FILE")"; exec python3 -c "import runpy; from miloco_server.config.normal_config import SERVER_CONFIG; SERVER_CONFIG['enable_file_logging']=False; runpy.run_path('/app/start_server.py',run_name='__main__')"
+    network_mode: host
+    environment:
+      BACKEND_HOST: ${LAN_IP:?Run bash deploy.sh first}
+      BACKEND_PORT: "8000"
+      BACKEND_LOG_LEVEL: warning
+      SECRET_KEY_FILE: /run/secrets/miloco_jwt_secret
+      TZ: Asia/Shanghai
+    secrets:
+      - miloco_jwt_secret
+    volumes:
+      - type: bind
+        source: .deploy/miloco
+        target: /app/miloco_server/.temp
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,socket; s=socket.create_connection((os.environ['BACKEND_HOST'],8000),3); s.close()"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 4
+
+  bridge:
+    image: micamera-net-bridge:local
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.bridge
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+    configs:
+      - source: micamera_config
+        target: /run/configs/MiCameraConfig.json
+    volumes:
+      - type: bind
+        source: .deploy/miloco/cert/cert.pem
+        target: /run/configs/miloco-server-cert.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - miloco_password_md5
+      - rtsp_api_token
+      - rtsp_password
+    depends_on:
+      miloco:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "/app/deployment/helper.py", "live"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  web:
+    image: micamera-net-web:local
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.web
+    ports:
+      - "${LAN_IP}:5081:8080"
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+configs:
+  micamera_config:
+    file: .deploy/MiCameraConfig.json
+
+secrets:
+  miloco_jwt_secret:
+    file: .deploy/secrets/miloco_jwt_secret
+  miloco_password_md5:
+    file: .deploy/secrets/miloco_password_md5
+  rtsp_api_token:
+    file: .deploy/secrets/rtsp_api_token
+  rtsp_password:
+    file: .deploy/secrets/rtsp_password

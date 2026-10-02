@@ -1,0 +1,13 @@
+# The output is architecture-independent static assets. Run build/tests natively;
+# the final Nginx stage still uses the requested target platform.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS build
+ENV NPM_CONFIG_ENGINE_STRICT=true
+WORKDIR /web
+COPY demo/MiCamera.Net.Sample.Web/package.json demo/MiCamera.Net.Sample.Web/package-lock.json ./
+RUN npm ci
+COPY demo/MiCamera.Net.Sample.Web/ ./
+RUN npm run lint && npm test && npm run build
+
+FROM nginx:stable-alpine
+COPY deployment/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /web/dist/ /usr/share/nginx/html/

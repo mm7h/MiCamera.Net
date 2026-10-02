@@ -27,3 +27,18 @@ export interface IceCandidate {
     sdpMLineIndex: number | null;
     usernameFragment: string | null;
 }
+
+export interface StreamHealth {
+    streamId: string;
+    state: string;
+    lastReceivedAt: string | null;
+    receiving: boolean;
+    snapshotAvailable: boolean;
+    webRtcAvailable: boolean;
+}
+
+export interface HealthResponse {
+    ready: boolean;
+    mediaAvailable: boolean;
+    streams: StreamHealth[];
+}

@@ -2,6 +2,12 @@
 
 public sealed class WebRtcOptions
 {
+    public string? BindAddress { get; set; }
+
+    public int? PortRangeStart { get; set; }
+
+    public int? PortRangeEnd { get; set; }
+
     public bool Enabled { get; set; } = true;
 
     public List<IceServerOptions> IceServers { get; set; } = [];

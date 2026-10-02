@@ -15,3 +15,6 @@
 **/.env.local
 
 AGENTS.md
+
+/.deploy/
+**/__pycache__/

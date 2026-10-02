@@ -19,5 +19,11 @@ public sealed class MilocoOptions
     /// </summary>
     public bool AllowInvalidServerCertificate { get; set; }
 
+    /// <summary>
+    /// Optional PEM certificate to pin for the Miloco HTTPS and WebSocket endpoints.
+    /// When supplied, only the exact certificate in this file is accepted.
+    /// </summary>
+    public string? TrustedServerCertificatePath { get; set; }
+
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(15);
 }

@@ -1,0 +1,11 @@
+.git
+.vs
+**/bin
+**/obj
+**/node_modules
+**/dist
+**/coverage
+**/.env*
+.deploy
+demo/MiCamera.Net.Sample.Server/Configs/MiCameraConfig.json
+docs

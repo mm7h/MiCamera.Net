@@ -2,6 +2,8 @@
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using MiCamera.Net.RTSP.Abstractions.Web;
+using MiCamera.Net.Media.Runtime;
+using MiCamera.Net.Abstractions.Common.Enums;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -52,6 +54,17 @@ public sealed class CameraApiService
         if (!this._streams.TryGetSnapshot(streamId, out _))
         {
             return new NotFoundObjectResult(new { error = "The camera stream was not found." });
+        }
+
+        MediaRuntimeReport runtime = MediaRuntimeDiagnostics.Current;
+        VideoCodec codec = this._streams.Streams.First(stream => string.Equals(stream.StreamId, streamId, StringComparison.OrdinalIgnoreCase)).Codec;
+        if (!this._options.Snapshot.Enabled || !runtime.NativeLibrariesAvailable || !runtime.MjpegEncoder ||
+            (codec == VideoCodec.H264 ? !runtime.H264Decoder : !runtime.HevcDecoder))
+        {
+            return new ObjectResult(new { error = "JPEG snapshots are disabled or required FFmpeg native decoder/MJPEG encoder capabilities are unavailable." })
+            {
+                StatusCode = StatusCodes.Status503ServiceUnavailable
+            };
         }
 
         if (!this._snapshots.TryGetSnapshot(streamId, out VideoSnapshot? snapshot))

@@ -56,10 +56,19 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this._decoder = ffmpeg.avcodec_alloc_context3(codec);
         this._decodedFrame = ffmpeg.av_frame_alloc();
         this._decodePacket = ffmpeg.av_packet_alloc();
-        EnsureAllocated(this._decoder, "decoder context");
-        EnsureAllocated(this._decodedFrame, "decoder frame");
-        EnsureAllocated(this._decodePacket, "decoder packet");
-        ThrowIfError(ffmpeg.avcodec_open2(this._decoder, codec, null), "open decoder");
+        try
+        {
+            EnsureAllocated(this._decoder, "decoder context");
+            EnsureAllocated(this._decodedFrame, "decoder frame");
+            EnsureAllocated(this._decodePacket, "decoder packet");
+            this._decoder->thread_count = 1;
+            ThrowIfError(ffmpeg.avcodec_open2(this._decoder, codec, null), "open decoder");
+        }
+        catch
+        {
+            this.Dispose();
+            throw;
+        }
     }
 
     public static bool TryCreate(
@@ -282,8 +291,8 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         EnsureAllocated(codec, $"H.264 encoder '{this._options.H264EncoderName}'");
         this._h264Encoder = ffmpeg.avcodec_alloc_context3(codec);
         EnsureAllocated(this._h264Encoder, "H.264 encoder context");
-        this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, "H.264 conversion frame");
-        this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, "H.264 pixel converter");
+        if (this._h264Frame is null) this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, "H.264 conversion frame");
+        if (this._h264Converter is null) this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, "H.264 pixel converter");
         this.ConfigureVideoEncoder(this._h264Encoder, AVPixelFormat.AV_PIX_FMT_YUV420P);
         this._h264Encoder->bit_rate = this._options.H264Bitrate;
         this._h264Encoder->gop_size = Math.Max(1, (int)Math.Round(90_000d / this._frameDuration * this._options.KeyFrameInterval.TotalSeconds));

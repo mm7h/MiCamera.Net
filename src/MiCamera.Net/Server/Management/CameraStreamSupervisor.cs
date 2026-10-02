@@ -127,7 +127,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
             if (message.MessageType == WebSocketMessageType.Text)
             {
                 completion.TrySetException(new InvalidOperationException(
-                    string.Concat("Miloco sent an unexpected text message: ", LimitText(message.Text))));
+                    "Miloco sent an unexpected text message; its contents have been suppressed."));
                 return;
             }
 
@@ -155,7 +155,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         {
             info.CancelReconnection = true;
             Exception exception = info.Exception ?? new WebSocketException(
-                $"Miloco WebSocket closed: {info.CloseStatus} {info.CloseStatusDescription}");
+                $"Miloco WebSocket closed: {info.CloseStatus}");
             completion.TrySetException(exception);
         });
 
@@ -334,16 +334,6 @@ internal sealed class CameraStreamSupervisor : BackgroundService
     {
         string message = exception.Message;
         return message.Length <= 512 ? message : string.Concat(message.AsSpan(0, 512), "…");
-    }
-
-    private static string LimitText(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "<empty>";
-        }
-
-        return value.Length <= 512 ? value : string.Concat(value.AsSpan(0, 512), "…");
     }
 
     private static async Task ObserveStoppedTaskAsync(Task? task)

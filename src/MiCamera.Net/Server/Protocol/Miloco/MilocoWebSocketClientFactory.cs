@@ -46,9 +46,10 @@ internal sealed class MilocoWebSocketClientFactory
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
         socket.Options.CollectHttpResponseDetails = true;
 
-        if (this._session.AllowInvalidServerCertificate)
+        if (this._session.AllowInvalidServerCertificate || this._session.HasTrustedServerCertificate)
         {
-            socket.Options.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
+            socket.Options.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
+                this._session.ValidateServerCertificate(certificate, errors);
         }
 
         return socket;

@@ -14,8 +14,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Configs\MiCameraConfig.json">
+    <Content Include="Configs\MiCameraConfig.json" Condition="Exists('Configs\MiCameraConfig.json')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
 

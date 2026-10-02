@@ -1,0 +1,35 @@
+FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
+ARG TARGETARCH
+WORKDIR /source
+COPY src/ src/
+COPY demo/MiCamera.Net.Sample.Server/ demo/MiCamera.Net.Sample.Server/
+RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac; \
+    dotnet publish demo/MiCamera.Net.Sample.Server/MiCamera.Net.Sample.Server.csproj \
+    -c Release -r "linux-$arch" --self-contained true -p:UseAppHost=true -o /out
+# A production container must receive its configuration through a read-only runtime mount.
+RUN rm -f /out/Configs/MiCameraConfig.json
+RUN mkdir -p /out/licenses && cp /root/.nuget/packages/sipsorcery/10.0.16/LICENSE.md /out/licenses/SIPSorcery-LICENSE.md
+
+FROM debian:trixie-slim
+ENV DEBIAN_FRONTEND=noninteractive DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    PYTHONDONTWRITEBYTECODE=1
+RUN attempt=1; \
+    until apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl ffmpeg python3 libicu76 libssl3t64 libstdc++6 libgcc-s1 tzdata; do \
+        if [ "$attempt" -ge 3 ]; then exit 1; fi; \
+        attempt=$((attempt + 1)); \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /out/ ./
+COPY deployment/helper.py deployment/helper.py
+COPY LICENSE /app/licenses/MiCamera.Net-LICENSE
+COPY deployment/THIRD-PARTY-NOTICES.md /app/licenses/THIRD-PARTY-NOTICES.md
+RUN set -eu; case "$(dpkg --print-architecture)" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac; \
+    ln -s "/usr/lib/$triplet" /app/native; \
+    mkdir -p /app/Configs
+COPY deployment/bridge-entrypoint.py /app/deployment/bridge-entrypoint.py
+USER 10001:10001
+ENTRYPOINT ["python3", "/app/deployment/bridge-entrypoint.py"]

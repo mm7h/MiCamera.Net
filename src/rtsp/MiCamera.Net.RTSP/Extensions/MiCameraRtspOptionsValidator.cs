@@ -14,6 +14,18 @@ internal static class MiCameraRtspOptionsValidator
         ArgumentNullException.ThrowIfNull(options.Media);
         ArgumentNullException.ThrowIfNull(options.Snapshot);
 
+        if (options.WebRtc.BindAddress is not null && !IPAddress.TryParse(options.WebRtc.BindAddress, out _))
+        {
+            throw new ArgumentException("WebRtc.BindAddress must be an IP address.", nameof(options));
+        }
+
+        if (options.WebRtc.PortRangeStart.HasValue != options.WebRtc.PortRangeEnd.HasValue ||
+            options.WebRtc.PortRangeStart is < 1 or > 65534 || options.WebRtc.PortRangeEnd is < 1 or > 65535 ||
+            options.WebRtc.PortRangeStart > options.WebRtc.PortRangeEnd || options.WebRtc.PortRangeStart % 2 == 1)
+        {
+            throw new ArgumentException("WebRtc port range must specify both bounds, start on an even port and stay within 1..65535.", nameof(options));
+        }
+
         if (!IPAddress.TryParse(options.Rtsp.ListenAddress, out IPAddress? rtspAddress))
         {
             throw new ArgumentException("Rtsp.ListenAddress must be an IP address.", nameof(options));

@@ -40,6 +40,7 @@ class FakePeerConnection {
 
 describe("WebRtcPreviewController", () => {
     afterEach(() => {
+        vi.useRealTimers();
         vi.unstubAllGlobals();
         FakePeerConnection.latest = null;
     });
@@ -98,7 +99,149 @@ describe("WebRtcPreviewController", () => {
 
         expect(api.addIceCandidate).toHaveBeenCalledWith("session-id", expect.objectContaining({
             candidate: "candidate:1 1 udp 1 127.0.0.1 9 typ host"
+        }), expect.any(AbortSignal));
+        await controller.stop();
+    });
+
+    it("releases a session when ICE never connects after the answer", async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
+        const api = {
+            createSession: vi.fn().mockResolvedValue({ sessionId: "timeout-session", offer: { type: "offer", sdp: "offer" } }),
+            setAnswer: vi.fn().mockResolvedValue(undefined),
+            deleteSession: vi.fn().mockResolvedValue(undefined)
+        };
+        const listener = vi.fn();
+        const controller = new WebRtcPreviewController(api as unknown as MiCameraApiClient, listener);
+        await controller.start("camera", document.createElement("video"));
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(api.deleteSession).toHaveBeenCalledWith("timeout-session", false);
+        expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "error", message: expect.stringContaining("连接超时") }));
+        expect(FakePeerConnection.latest?.close).toHaveBeenCalledOnce();
+    });
+
+    it("cancels the timer once connected", async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
+        const api = {
+            createSession: vi.fn().mockResolvedValue({ sessionId: "connected-session", offer: { type: "offer", sdp: "offer" } }),
+            setAnswer: vi.fn().mockResolvedValue(undefined),
+            deleteSession: vi.fn().mockResolvedValue(undefined)
+        };
+        const listener = vi.fn();
+        const controller = new WebRtcPreviewController(api as unknown as MiCameraApiClient, listener);
+        await controller.start("camera", document.createElement("video"));
+        const peer = FakePeerConnection.latest!;
+        peer.connectionState = "connected";
+        peer.onconnectionstatechange?.call(peer as unknown as RTCPeerConnection, new Event("state"));
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "connected" }));
+        expect(api.deleteSession).not.toHaveBeenCalled();
+        await controller.stop();
+    });
+
+    it("does not overwrite a new preview when old failure cleanup finishes", async () => {
+        vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
+        let finishCleanup: (() => void) | undefined;
+        const api = {
+            createSession: vi.fn()
+                .mockResolvedValueOnce({ sessionId: "old-session", offer: { type: "offer", sdp: "offer" } })
+                .mockResolvedValueOnce({ sessionId: "new-session", offer: { type: "offer", sdp: "offer" } }),
+            setAnswer: vi.fn().mockResolvedValue(undefined),
+            deleteSession: vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => {
+                finishCleanup = resolve;
+            })).mockResolvedValue(undefined)
+        };
+        const listener = vi.fn();
+        const controller = new WebRtcPreviewController(api as unknown as MiCameraApiClient, listener);
+        await controller.start("old-camera", document.createElement("video"));
+        const oldPeer = FakePeerConnection.latest!;
+        oldPeer.connectionState = "failed";
+        oldPeer.onconnectionstatechange?.call(oldPeer as unknown as RTCPeerConnection, new Event("state"));
+
+        await controller.start("new-camera", document.createElement("video"));
+        const newPeer = FakePeerConnection.latest!;
+        newPeer.connectionState = "connected";
+        newPeer.onconnectionstatechange?.call(newPeer as unknown as RTCPeerConnection, new Event("state"));
+        finishCleanup?.();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "connected" }));
+        expect(newPeer.close).not.toHaveBeenCalled();
+        await controller.stop();
+    });
+
+    it("does not overwrite a new preview when old stop cleanup finishes", async () => {
+        vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
+        let finishCleanup: (() => void) | undefined;
+        const api = {
+            createSession: vi.fn()
+                .mockResolvedValueOnce({ sessionId: "old-session", offer: { type: "offer", sdp: "offer" } })
+                .mockResolvedValueOnce({ sessionId: "new-session", offer: { type: "offer", sdp: "offer" } }),
+            setAnswer: vi.fn().mockResolvedValue(undefined),
+            deleteSession: vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => {
+                finishCleanup = resolve;
+            })).mockResolvedValue(undefined)
+        };
+        const listener = vi.fn();
+        const controller = new WebRtcPreviewController(api as unknown as MiCameraApiClient, listener);
+        await controller.start("old-camera", document.createElement("video"));
+        const stopped = controller.stop();
+        await controller.start("new-camera", document.createElement("video"));
+        const newPeer = FakePeerConnection.latest!;
+        newPeer.connectionState = "connected";
+        newPeer.onconnectionstatechange?.call(newPeer as unknown as RTCPeerConnection, new Event("state"));
+        finishCleanup?.();
+        await stopped;
+
+        expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "connected" }));
+        await controller.stop();
+    });
+
+    it("deletes a created session even when the returned offer is invalid", async () => {
+        vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
+        const api = {
+            createSession: vi.fn().mockResolvedValue({ sessionId: "invalid-session", offer: { type: "answer", sdp: "invalid" } }),
+            deleteSession: vi.fn().mockResolvedValue(undefined)
+        };
+        const listener = vi.fn();
+        const controller = new WebRtcPreviewController(api as unknown as MiCameraApiClient, listener);
+        await controller.start("camera", document.createElement("video"));
+
+        expect(api.deleteSession).toHaveBeenCalledWith("invalid-session", false);
+        expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "error" }));
+    });
+
+    it("ignores an old autoplay rejection after starting a new preview", async () => {
+        vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
+        let rejectPlayback: ((error: Error) => void) | undefined;
+        const api = {
+            createSession: vi.fn()
+                .mockResolvedValueOnce({ sessionId: "old-session", offer: { type: "offer", sdp: "offer" } })
+                .mockResolvedValueOnce({ sessionId: "new-session", offer: { type: "offer", sdp: "offer" } }),
+            setAnswer: vi.fn().mockResolvedValue(undefined),
+            deleteSession: vi.fn().mockResolvedValue(undefined)
+        };
+        const listener = vi.fn();
+        const controller = new WebRtcPreviewController(api as unknown as MiCameraApiClient, listener);
+        const oldVideo = document.createElement("video");
+        vi.spyOn(oldVideo, "play").mockImplementation(() => new Promise<void>((_, reject) => {
+            rejectPlayback = reject;
         }));
+        await controller.start("old-camera", oldVideo);
+        const oldPeer = FakePeerConnection.latest!;
+        oldPeer.ontrack?.call(oldPeer as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+
+        await controller.start("new-camera", document.createElement("video"));
+        const newPeer = FakePeerConnection.latest!;
+        newPeer.connectionState = "connected";
+        newPeer.onconnectionstatechange?.call(newPeer as unknown as RTCPeerConnection, new Event("state"));
+        rejectPlayback?.(new Error("autoplay blocked"));
+        await Promise.resolve();
+
+        expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "connected" }));
+        await controller.stop();
     });
 
     it("deletes the active server session when stopped", async () => {

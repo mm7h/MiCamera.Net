@@ -112,14 +112,14 @@ internal sealed class StreamPipeline : IDisposable
             return true;
         }
 
-        if (codec == VideoCodec.H264 && this._stream.Codec == VideoCodec.H265 && FFmpegRuntime.IsAvailable)
+        if (codec == VideoCodec.H264 && this._stream.Codec == VideoCodec.H265 && FFmpegRuntime.Report.FullyAvailable && this._processorFailure is null)
         {
             reason = null;
             return true;
         }
 
         reason = codec == VideoCodec.H264 && this._stream.Codec == VideoCodec.H265
-            ? "H.265 to H.264 WebRTC conversion requires FFmpeg native libraries."
+            ? "H.265 to H.264 WebRTC conversion requires working FFmpeg decoders and encoders."
             : $"The camera stream cannot provide {codec} from {this._stream.Codec}.";
         return false;
     }
@@ -147,6 +147,7 @@ internal sealed class StreamPipeline : IDisposable
                     {
                         FFmpegFrameProcessor? processor = this.GetOrCreateProcessor();
                         result = processor?.Process(unit, Volatile.Read(ref this._h264SubscriberCount) > 0);
+                        if (result is not null) this._processorFailure = null;
                     }
 
                     if (result is null)

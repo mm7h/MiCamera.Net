@@ -1,31 +1,68 @@
 {
   "Miloco": {
-    "BaseUrl": "https://miloco:5530",
-    "Username": "admin",
-    "Password": "",
-    "AllowInvalidServerCertificate": true,
+    "BaseUrl": "https://127.0.0.1:8000",
+    "Username": "admin", //Miloco 的本地服务账号，默认都为 admin
+    "Password": "", //Miloco 本地接口要求的小写 MD5 密码值；请在未提交的配置文件中填写
+    "AllowInvalidServerCertificate": true, //是否跳过 Miloco HTTPS 证书校验
     "RequestTimeout": 15
   },
   "Streaming": {
-    "ConnectTimeout": 10,
-    "FirstKeyFrameTimeout": 60,
-    "IdleTimeout": 60,
-    "MaxMessageBytes": 4194304,
-    "SubscriberBufferCapacity": 32
+    "ConnectTimeout": 10, //WebSocket 建连超时秒数
+    "FirstKeyFrameTimeout": 60, //连接成功后等待第一个关键帧的最长秒数；超时会重连
+    "IdleTimeout": 60, //已连接但长期未收到视频数据时的超时秒数；超时会重连
+    "MaxMessageBytes": 4194304, //单个 WebSocket 视频消息可接受的最大字节数；用于防止异常大包耗尽内存
+    "SubscriberBufferCapacity": 32 //每个下游订阅者的视频缓冲块数；过小容易丢帧，过大增加内存和延迟，最低为 4
   },
   "Reconnect": {
-    "InitialDelay": 1,
-    "MaximumDelay": 30,
-    "BackoffMultiplier": 2.0,
-    "JitterRatio": 0.2
+    "InitialDelay": 1, //首次重连等待秒数
+    "MaximumDelay": 30, //指数退避后的最大重连等待秒数
+    "BackoffMultiplier": 2.0, //每次失败后延迟乘数；2 表示 1、2、4、8… 秒
+    "JitterRatio": 0.2 //重连延迟的随机扰动比例；0.2 即上下浮动约 20%，避免多路流同时重连
   },
-  "Streams": [
-    {
-      "StreamId": "living-room",
-      "CameraDeviceId": "replace-with-your-camera-did",
-      "Channel": 0,
-      "Codec": "H265",
-      "NominalFrameRate": 25
+  "MediaServer": {
+    "ListenAddress": "http://127.0.0.1:5080", //HTTP API 监听地址；非回环监听必须配置 BearerToken
+    "BearerToken": "",
+    "AllowedOrigins": [ "http://127.0.0.1:5081" ],
+    "FFmpeg": {
+      "Path": "ffmpeg", //FFmpeg 7.1 兼容原生库目录；相对应用输出目录解析，留空时使用默认搜索路径
+      "H264EncoderName": "libx264",
+      "H264Bitrate": 2500000,
+      "H264Preset": "veryfast",
+      "KeyFrameInterval": 2
+    },
+    "Rtsp": {
+      "ListenAddress": "127.0.0.1",
+      "Port": 8554,
+      "PathPrefix": "/live", // 流地址的公共前缀，与 StreamId 拼成 rtsp://{ip}:{port}/live/living-room
+      "Username": "", // RTSP Digest 认证用户名
+      "Password": "", // RTSP Digest 认证密码，需要与用户名一起配置
+      "RtpMtu": 1200, // 单个 RTP 包的大小上限，单位为字节。大视频数据会拆成多个 RTP 包。它不是分辨率或码率
+      "SessionTimeout": 60, // RTSP 控制通道的空闲超时。客户端长时间不发送请求或保活消息，会被断开
+      "Streams": [
+        {
+          "StreamId": "living-room", //本项目对外暴露的流名称，如 living-room；会出现在 RTSP URL 中，必须唯一
+          "CameraDeviceId": "1174672935", //米家摄像头的 DID；这是从 Miloco 的设备/摄像头列表得到的设备标识，不是摄像头名称
+          "Channel": 0, //镜头通道，普通单摄通常为 0；双摄等设备可能有 1。同一 CameraDeviceId + Channel 不能配置两次
+          "Codec": "H264", //Miloco 输出的实际编码：H264 或 H265。示例为 H264；配置错误会导致解码/转码失败
+          "NominalFrameRate": 25 //码流未携带有效时间信息时采用的回退帧率，通常填 25；允许 1–120
+        }
+      ]
+    },
+    "WebRtc": {
+      "BindAddress": null,
+      "PortRangeStart": null, // 固定端口范围时，两端必须同时配置，起点必须为偶数
+      "PortRangeEnd": null,
+      "Enabled": true,
+      "IceServers": [],
+      "IceGatheringTimeout": 5,
+      "PendingSessionTimeout": 30,
+      "DisconnectedGracePeriod": 15,
+      "TranscoderIdleTimeout": 10,
+      "MaxPeersPerStream": 4
+    },
+    "Snapshot": {
+      "Enabled": true, // 开启后可以通过 HTTP API 获取摄像头快照图片
+      "JpegQuality": 85 // JPEG 质量，范围 1–100。越高通常越清晰、文件越大，不影响 RTSP/WebRTC 视频质量
     }
-  ]
+  }
 }

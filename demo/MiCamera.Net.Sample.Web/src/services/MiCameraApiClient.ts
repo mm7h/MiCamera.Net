@@ -47,25 +47,30 @@ export class MiCameraApiClient {
         });
     }
 
-    public async setAnswer(sessionId: string, answer: SessionDescription): Promise<void> {
+    public async setAnswer(sessionId: string, answer: SessionDescription, signal?: AbortSignal): Promise<void> {
         await this.request(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}/answer`, {
             method: "POST",
+            signal,
             body: JSON.stringify(answer)
         });
     }
 
-    public async addIceCandidate(sessionId: string, candidate: IceCandidate): Promise<void> {
+    public async addIceCandidate(sessionId: string, candidate: IceCandidate, signal?: AbortSignal): Promise<void> {
         await this.request(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}/ice-candidates`, {
             method: "POST",
+            signal,
             body: JSON.stringify(candidate)
         });
     }
 
     public async deleteSession(sessionId: string, keepalive = false): Promise<void> {
+        const cancellation = new AbortController();
+        const timeout = setTimeout(() => cancellation.abort(), 5_000);
         try {
             await this.request(`/api/webrtc/sessions/${encodeURIComponent(sessionId)}`, {
                 method: "DELETE",
-                keepalive
+                keepalive,
+                signal: cancellation.signal
             });
         } catch (error) {
             if (error instanceof MiCameraApiError && error.status === 404) {
@@ -73,6 +78,8 @@ export class MiCameraApiClient {
             }
 
             throw error;
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
