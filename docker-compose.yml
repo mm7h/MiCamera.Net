@@ -9,13 +9,8 @@ x-logging: &logging
 services:
   miloco:
     image: ghcr.io/miiot/miloco:260618@sha256:1627132b4364feea0a60d2c880bacdbea614904a04ec2d4d457143d2fb5f7b68
-    # Disable unbounded upstream file logs; retain Docker's rotated console logs.
-    # The upstream image accepts SECRET_KEY only through its environment, so read
-    # the granted Compose secret immediately before replacing this shell with Python.
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - export SECRET_KEY="$$(cat "$$SECRET_KEY_FILE")"; exec python3 -c "import runpy; from miloco_server.config.normal_config import SERVER_CONFIG; SERVER_CONFIG['enable_file_logging']=False; runpy.run_path('/app/start_server.py',run_name='__main__')"
+    # Keep authorization/raw video; MiCamera.Net owns JPEG snapshots and transcoding.
+    entrypoint: ["python3", "/opt/micamera/miloco-entrypoint.py"]
     network_mode: host
     environment:
       BACKEND_HOST: ${LAN_IP:?Run bash deploy.sh first}
@@ -26,6 +21,12 @@ services:
     secrets:
       - miloco_jwt_secret
     volumes:
+      - type: bind
+        source: ./deployment/miloco-entrypoint.py
+        target: /opt/micamera/miloco-entrypoint.py
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: .deploy/miloco
         target: /app/miloco_server/.temp
@@ -41,13 +42,14 @@ services:
       retries: 4
 
   bridge:
-    image: micamera-net-bridge:local
+    image: ${MICAMERA_BRIDGE_IMAGE:-micamera-net-bridge:local}
     build:
       context: .
       dockerfile: deployment/Dockerfile.bridge
     network_mode: host
     environment:
       TZ: Asia/Shanghai
+      MICAMERA_DATA_DIRECTORY: /run/micamera-state
     configs:
       - source: micamera_config
         target: /run/configs/MiCameraConfig.json
@@ -58,10 +60,13 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: .deploy/micamera-state
+        target: /run/micamera-state
+        bind:
+          create_host_path: false
     secrets:
-      - miloco_password_md5
       - rtsp_api_token
-      - rtsp_password
     depends_on:
       miloco:
         condition: service_healthy
@@ -77,7 +82,7 @@ services:
       retries: 3
 
   web:
-    image: micamera-net-web:local
+    image: ${MICAMERA_WEB_IMAGE:-micamera-net-web:local}
     build:
       context: .
       dockerfile: deployment/Dockerfile.web
@@ -103,9 +108,5 @@ configs:
 secrets:
   miloco_jwt_secret:
     file: .deploy/secrets/miloco_jwt_secret
-  miloco_password_md5:
-    file: .deploy/secrets/miloco_password_md5
   rtsp_api_token:
     file: .deploy/secrets/rtsp_api_token
-  rtsp_password:
-    file: .deploy/secrets/rtsp_password

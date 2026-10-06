@@ -3,6 +3,11 @@ using MiCamera.Net.Abstractions.Common.Models;
 
 namespace MiCamera.Net.Server.Providers;
 
+/// <summary>
+/// Bounded hand-off between camera reception and one downstream consumer. The queue absorbs
+/// bursts; overflow preserves the buffered frames and resumes at the next key frame, so a dropped
+/// reference frame cannot corrupt subsequent predictions.
+/// </summary>
 internal sealed class CameraStreamSubscription
 {
     private readonly object _lock = new();
@@ -48,14 +53,12 @@ internal sealed class CameraStreamSubscription
                             continue;
                         }
 
-                        this.ResetForKeyFrameCore();
                         return;
                     }
                 }
 
                 if (!this.TryWrite(chunk))
                 {
-                    this.ResetForKeyFrameCore();
                     return;
                 }
 
@@ -63,9 +66,14 @@ internal sealed class CameraStreamSubscription
                 return;
             }
 
+            // A full queue means the consumer fell behind, not that its backlog is unusable: the
+            // buffered chunks are still in decode order. Drop this newest frame and let the queue
+            // drain. Draining the buffer here would cost up to the whole buffer plus a wait for the
+            // next key frame, which a viewer sees as a multi-second freeze instead of one missing
+            // frame. Keeping the queue bounded keeps the added latency bounded as well.
             if (!this.TryWrite(chunk))
             {
-                this.ResetForKeyFrameCore();
+                this._waitingForKeyFrame = true;
             }
         }
     }

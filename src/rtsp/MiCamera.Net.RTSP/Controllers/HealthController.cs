@@ -5,6 +5,7 @@ using MiCamera.Net.Media.Runtime;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using MiCamera.Net.RTSP.Abstractions.Web;
+using MiCamera.Net.RTSP.Server;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MiCamera.Net.RTSP.Controllers;
@@ -13,7 +14,7 @@ namespace MiCamera.Net.RTSP.Controllers;
 [ApiController]
 [Route("api/health")]
 public sealed class HealthController(ICameraStreamProvider source, IVideoSnapshotProvider snapshots,
-    IMediaCapabilityProvider media, MiCameraServerOptions server, MiCameraRtspOptions options) : ControllerBase
+    IMediaCapabilityProvider media, MiCameraServerOptions server, MiCameraRtspOptions options, RtspServerHostedService rtsp) : ControllerBase
 {
     [HttpGet("live")]
     public IActionResult Live() => this.Ok(new { live = true });
@@ -33,8 +34,9 @@ public sealed class HealthController(ICameraStreamProvider source, IVideoSnapsho
                 receiving, snapshot, options.WebRtc.Enabled && media.CanProvide(stream.StreamId, VideoCodec.H264, out _));
         }).ToArray();
         bool native = MediaRuntimeDiagnostics.Current.FullyAvailable;
-        bool ready = streams.Length > 0 && native && streams.All(stream => stream.Receiving &&
+        bool mediaReady = streams.Length > 0 && native && streams.All(stream => stream.Receiving &&
             (!options.Snapshot.Enabled || stream.SnapshotAvailable) && (!options.WebRtc.Enabled || stream.WebRtcAvailable));
-        return this.StatusCode(ready ? 200 : 503, new HealthResponse(ready, native, streams));
+        bool ready = mediaReady && rtsp.Configured && rtsp.Listening;
+        return this.StatusCode(ready ? 200 : 503, new HealthResponse(ready, native, streams, mediaReady, rtsp.Configured, rtsp.Listening));
     }
 }

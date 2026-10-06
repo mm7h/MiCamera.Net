@@ -14,10 +14,16 @@ export interface WebRtcPreview {
     stop(keepalive?: boolean): Promise<void>;
 }
 
-export function useWebRtcPreview(apiClient: MiCameraApiClient | null): WebRtcPreview {
+export function useWebRtcPreview(apiClient: MiCameraApiClient | null, onError: (message: string) => void): WebRtcPreview {
     const controllerRef = useRef<WebRtcPreviewController | null>(null);
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const [state, setState] = useState<WebRtcPreviewState>(IdleState);
+    const receiveState = useCallback((nextState: WebRtcPreviewState): void => {
+        setState(nextState);
+        if (nextState.phase === "error" && nextState.message !== null) {
+            onError(nextState.message);
+        }
+    }, [onError]);
 
     useEffect(() => {
         if (apiClient === null) {
@@ -26,7 +32,7 @@ export function useWebRtcPreview(apiClient: MiCameraApiClient | null): WebRtcPre
             return undefined;
         }
 
-        const controller = new WebRtcPreviewController(apiClient, setState);
+        const controller = new WebRtcPreviewController(apiClient, receiveState);
         controllerRef.current = controller;
 
         return () => {
@@ -36,19 +42,19 @@ export function useWebRtcPreview(apiClient: MiCameraApiClient | null): WebRtcPre
 
             void controller.stop();
         };
-    }, [apiClient]);
+    }, [apiClient, receiveState]);
 
     const start = useCallback(async (streamId: string): Promise<void> => {
         const controller = controllerRef.current;
         const videoElement = videoRef.current;
 
         if (controller === null || videoElement === null) {
-            setState({ phase: "error", message: "请先保存有效的 API 地址。" });
+            receiveState({ phase: "error", message: "请先保存有效的 API 地址。" });
             return;
         }
 
         await controller.start(streamId, videoElement);
-    }, []);
+    }, [receiveState]);
 
     const stop = useCallback(async (keepalive = false): Promise<void> => {
         await controllerRef.current?.stop(keepalive);

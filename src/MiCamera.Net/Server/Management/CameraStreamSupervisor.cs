@@ -22,6 +22,11 @@ internal sealed class CameraStreamSupervisor : BackgroundService
     private readonly MilocoWebSocketClientFactory _webSocketFactory;
     private readonly CameraStreamHub _streamHub;
     private readonly ILogger<CameraStreamSupervisor> _logger;
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private CancellationToken _hostToken;
+    private CancellationTokenSource? _generation;
+    private Task _workers = Task.CompletedTask;
+    private bool _suspended;
 
     public CameraStreamSupervisor(
         MiCameraServerOptions options,
@@ -37,19 +42,53 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         this._logger = logger;
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        Task[] streamTasks = this._options.Streams
-            .Select(stream => this.RunStreamAsync(stream, stoppingToken))
-            .ToArray();
-
-        return Task.WhenAll(streamTasks);
+        this._hostToken = stoppingToken;
+        await this._options.Initialization.WaitAsync(stoppingToken).ConfigureAwait(false);
+        await this._lifecycleLock.WaitAsync(stoppingToken).ConfigureAwait(false);
+        try { if (!this._suspended) this.StartWorkers(); }
+        finally { this._lifecycleLock.Release(); }
+        try { await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false); }
+        finally { await this.SuspendAsync().ConfigureAwait(false); }
     }
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    public async Task SuspendAsync()
     {
-        this._streamHub.StopAll();
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        await this._lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            this._suspended = true;
+            this._generation?.Cancel();
+            await this._workers.ConfigureAwait(false);
+            this._generation?.Dispose();
+            this._generation = null;
+            this._streamHub.StopAll();
+        }
+        finally { this._lifecycleLock.Release(); }
+    }
+
+    public async Task ResumeAsync()
+    {
+        await this._lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            this._hostToken.ThrowIfCancellationRequested();
+            this._session.Reset();
+            this._streamHub.Reset();
+            this._suspended = false;
+            this.StartWorkers();
+        }
+        finally { this._lifecycleLock.Release(); }
+    }
+
+    private void StartWorkers()
+    {
+        if (this._generation is not null) return;
+        this._generation = CancellationTokenSource.CreateLinkedTokenSource(this._hostToken);
+        CancellationToken token = this._generation.Token;
+        this._workers = Task.WhenAll(this._options.Streams
+            .Select(stream => Task.Run(() => this.RunStreamAsync(stream, token))));
     }
 
     private async Task RunStreamAsync(CameraStreamOptions stream, CancellationToken stoppingToken)
@@ -109,7 +148,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         using CancellationTokenSource connectionCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
-        Channel<byte[]> ingress = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(
+        Channel<(byte[] Data, DateTimeOffset ReceivedAt)> ingress = Channel.CreateBounded<(byte[], DateTimeOffset)>(new BoundedChannelOptions(
             Math.Max(4, this._options.Streaming.SubscriberBufferCapacity))
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -143,9 +182,10 @@ internal sealed class CameraStreamSupervisor : BackgroundService
                 return;
             }
 
-            Interlocked.Exchange(ref lastMessageTicks, DateTime.UtcNow.Ticks);
+            DateTimeOffset receivedAt = DateTimeOffset.UtcNow;
+            Interlocked.Exchange(ref lastMessageTicks, receivedAt.UtcTicks);
 
-            if (!ingress.Writer.TryWrite(data))
+            if (!ingress.Writer.TryWrite((data, receivedAt)))
             {
                 Interlocked.Exchange(ref droppedMessages, 1);
             }
@@ -164,7 +204,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
 
         try
         {
-            await client.StartOrFail().ConfigureAwait(false);
+            await client.StartOrFail().WaitAsync(stoppingToken).ConfigureAwait(false);
             this._streamHub.SetState(stream.StreamId, CameraStreamState.WaitingForKeyFrame);
 
             consumeTask = this.ConsumeIncomingChunksAsync(
@@ -196,7 +236,8 @@ internal sealed class CameraStreamSupervisor : BackgroundService
             connectionCancellation.Cancel();
             ingress.Writer.TryComplete();
 
-            if (client.IsRunning)
+            // Cancellation disposes the socket; do not wait for the upstream close handshake during reconfiguration.
+            if (client.IsRunning && !stoppingToken.IsCancellationRequested)
             {
                 try
                 {
@@ -216,7 +257,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
 
     private async Task ConsumeIncomingChunksAsync(
         CameraStreamOptions stream,
-        ChannelReader<byte[]> reader,
+        ChannelReader<(byte[] Data, DateTimeOffset ReceivedAt)> reader,
         Func<bool> consumeDropSignal,
         Action markKeyFramePublished,
         CancellationToken cancellationToken)
@@ -224,7 +265,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         List<byte[]> cachedParameters = [];
         bool waitingForKeyFrame = true;
 
-        await foreach (byte[] data in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach ((byte[] data, DateTimeOffset receivedAt) in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             if (consumeDropSignal())
             {
@@ -259,11 +300,11 @@ internal sealed class CameraStreamSupervisor : BackgroundService
                 {
                     foreach (byte[] cachedParameterChunk in cachedParameters)
                     {
-                        this.Publish(stream, cachedParameterChunk, false, true);
+                        this.Publish(stream, cachedParameterChunk, false, true, receivedAt);
                     }
                 }
 
-                this.Publish(stream, data, true, inspection.ContainsCodecParameters);
+                this.Publish(stream, data, true, inspection.ContainsCodecParameters, receivedAt);
                 waitingForKeyFrame = false;
                 markKeyFramePublished();
                 continue;
@@ -273,7 +314,8 @@ internal sealed class CameraStreamSupervisor : BackgroundService
                 stream,
                 data,
                 inspection.IsKeyFrame,
-                inspection.ContainsCodecParameters);
+                inspection.ContainsCodecParameters,
+                receivedAt);
         }
     }
 
@@ -306,14 +348,15 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         CameraStreamOptions stream,
         byte[] data,
         bool isKeyFrame,
-        bool containsCodecParameters)
+        bool containsCodecParameters,
+        DateTimeOffset receivedAt)
     {
         this._streamHub.Publish(new EncodedVideoChunk(
             stream.StreamId,
             stream.Codec,
             data,
             this._streamHub.NextSequence(stream.StreamId),
-            DateTimeOffset.UtcNow,
+            receivedAt,
             isKeyFrame,
             containsCodecParameters));
     }

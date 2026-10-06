@@ -21,7 +21,9 @@ internal static class ServerBuilderExtensions
             services.AddSingleton<CameraStreamHub>();
             services.AddSingleton<ICameraStreamProvider>(static provider =>
                 provider.GetRequiredService<CameraStreamHub>());
-            services.AddHostedService<CameraStreamSupervisor>();
+            services.AddSingleton<CameraStreamSupervisor>();
+            services.AddHostedService(provider => provider.GetRequiredService<CameraStreamSupervisor>());
+            services.AddSingleton(provider => new CameraRuntime(provider.GetRequiredService<CameraStreamSupervisor>()));
         });
     }
 }

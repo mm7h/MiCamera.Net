@@ -1,3 +1,5 @@
+import { Button } from "antd";
+import { CameraOutlined } from "@ant-design/icons";
 import { SnapshotHistory } from "./SnapshotHistory";
 import type { SnapshotHistoryItem } from "../types/snapshot";
 
@@ -6,7 +8,6 @@ interface SnapshotPreviewProps {
     historyItems: readonly SnapshotHistoryItem[];
     snapshotUrl: string | null;
     loading: boolean;
-    message: string | null;
     onRefresh(): void;
     onDeleteSnapshot(itemId: number): void;
 }
@@ -16,7 +17,6 @@ export function SnapshotPreview({
     historyItems,
     snapshotUrl,
     loading,
-    message,
     onRefresh,
     onDeleteSnapshot
 }: SnapshotPreviewProps): React.JSX.Element {
@@ -27,9 +27,9 @@ export function SnapshotPreview({
                     <p className="eyebrow">最新关键帧</p>
                     <h2>JPEG 截图</h2>
                 </div>
-                <button className="secondary" type="button" onClick={onRefresh} disabled={loading || !available}>
+                <Button icon={<CameraOutlined />} onClick={onRefresh} loading={loading} disabled={!available}>
                     {loading ? "正在获取…" : "刷新截图"}
-                </button>
+                </Button>
             </div>
             <div className="snapshot-frame">
                 {snapshotUrl !== null ? (
@@ -38,7 +38,6 @@ export function SnapshotPreview({
                     <p>{available ? "尚未加载截图。" : "服务端尚未生成可用截图。"}</p>
                 )}
             </div>
-            {message !== null && <p className="connection-message error">{message}</p>}
             <SnapshotHistory items={historyItems} onDelete={onDeleteSnapshot} />
         </section>
     );

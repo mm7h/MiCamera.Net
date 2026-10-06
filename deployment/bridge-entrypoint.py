@@ -11,9 +11,7 @@ CONFIG_TEMPLATE = Path("/run/configs/MiCameraConfig.json")
 RUNTIME_CONFIG_DIRECTORY = Path("/tmp")
 APPLICATION = "/app/MiCamera.Net.Sample.Server"
 SECRETS = {
-    ("Miloco", "Password"): Path("/run/secrets/miloco_password_md5"),
     ("MediaServer", "BearerToken"): Path("/run/secrets/rtsp_api_token"),
-    ("MediaServer", "Rtsp", "Password"): Path("/run/secrets/rtsp_password"),
 }
 
 

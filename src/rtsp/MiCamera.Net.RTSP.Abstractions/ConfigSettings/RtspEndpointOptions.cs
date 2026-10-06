@@ -12,6 +12,13 @@ public sealed class RtspEndpointOptions
 
     public string Password { get; set; } = string.Empty;
 
+    /// <summary>Digest HA1 loaded from web-managed persistent settings.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? DigestHa1 { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool WebManaged { get; set; }
+
     public int RtpMtu { get; set; } = 1200;
 
     public TimeSpan SessionTimeout { get; set; } = TimeSpan.FromSeconds(60);

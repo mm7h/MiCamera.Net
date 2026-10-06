@@ -9,3 +9,4 @@
 .deploy
 demo/MiCamera.Net.Sample.Server/Configs/MiCameraConfig.json
 docs
+deployment/build_output

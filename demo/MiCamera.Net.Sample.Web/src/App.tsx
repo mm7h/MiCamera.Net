@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CameraList } from "./components/CameraList";
-import { ConnectionSettings } from "./components/ConnectionSettings";
+import { SetupGate } from "./components/SetupGate";
+import { SetupWizard } from "./components/SetupWizard";
+import { Alert, Button, ConfigProvider, theme as antTheme } from "antd";
+import zhCN from "antd/locale/zh_CN";
+import { SettingOutlined, ReloadOutlined, BulbOutlined } from "@ant-design/icons";
+import { ErrorDrawer, type ErrorNotification } from "./components/ErrorDrawer";
 import { SnapshotPreview } from "./components/SnapshotPreview";
 import { VideoPreview } from "./components/VideoPreview";
 import { useColorTheme } from "./hooks/useColorTheme";
 import { useWebRtcPreview } from "./hooks/useWebRtcPreview";
-import { MiCameraApiClient } from "./services/MiCameraApiClient";
+import { MiCameraApiClient, type SetupStatus } from "./services/MiCameraApiClient";
 import type { CameraStreamInfo } from "./types/api";
 import type { SnapshotHistoryItem } from "./types/snapshot";
 
@@ -24,20 +29,20 @@ const MaximumScreenshotHistoryItems = 40;
 export default function App(): React.JSX.Element {
     const { theme, toggleTheme } = useColorTheme();
     const defaultApiUrl = useMemo(getDefaultApiUrl, []);
-    const [draftApiUrl, setDraftApiUrl] = useState(defaultApiUrl);
-    const [draftBearerToken, setDraftBearerToken] = useState("");
     const [connection, setConnection] = useState<ConnectionConfiguration>({
         apiUrl: defaultApiUrl,
         bearerToken: ""
     });
     const [cameras, setCameras] = useState<CameraStreamInfo[]>([]);
-    const [cameraError, setCameraError] = useState<string | null>(null);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const pendingSetupRef = useRef<SetupStatus | null>(null);
+    const [rtspSetup, setRtspSetup] = useState<SetupStatus | null>(null);
+    const [notification, setNotification] = useState<ErrorNotification | null>(null);
+    const nextNotificationIdRef = useRef(0);
     const [camerasLoading, setCamerasLoading] = useState(false);
     const [selectedStreamId, setSelectedStreamId] = useState<string | null>(null);
     const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryItem[]>([]);
-    const [snapshotError, setSnapshotError] = useState<string | null>(null);
     const [snapshotLoading, setSnapshotLoading] = useState(false);
-    const [copyMessage, setCopyMessage] = useState<string | null>(null);
     const cameraAbortRef = useRef<AbortController | null>(null);
     const cameraRequestIdRef = useRef(0);
     const hasLoadedInitialCamerasRef = useRef(false);
@@ -62,7 +67,14 @@ export default function App(): React.JSX.Element {
 
     const apiClient = clientConfiguration.client;
     const selectedCamera = cameras.find((camera) => camera.streamId === selectedStreamId) ?? null;
-    const { state: previewState, videoRef, start: startPreview, stop: stopPreview } = useWebRtcPreview(apiClient);
+    const notifyError = useCallback((title: string, message: string): void => {
+        setNotification({ id: ++nextNotificationIdRef.current, title, message });
+    }, []);
+    const closeNotification = useCallback(() => setNotification(null), []);
+    const notifyPreviewError = useCallback((message: string): void => {
+        notifyError("视频连接失败", message);
+    }, [notifyError]);
+    const { state: previewState, videoRef, start: startPreview, stop: stopPreview } = useWebRtcPreview(apiClient, notifyPreviewError);
 
     const clearSnapshotHistory = useCallback((): void => {
         for (const item of snapshotHistoryRef.current) {
@@ -103,10 +115,11 @@ export default function App(): React.JSX.Element {
     }, []);
 
     const refreshCameras = useCallback(async (): Promise<void> => {
+        if (rtspSetup?.configured !== true) return;
         if (apiClient === null) {
             setCameras([]);
             setSelectedStreamId(null);
-            setCameraError(clientConfiguration.error);
+            notifyError("连接配置无效", clientConfiguration.error ?? "请先保存有效的 API 地址。");
             return;
         }
 
@@ -115,7 +128,6 @@ export default function App(): React.JSX.Element {
         const requestId = ++cameraRequestIdRef.current;
         cameraAbortRef.current = controller;
         setCamerasLoading(true);
-        setCameraError(null);
 
         try {
             const streams = await apiClient.getCameras(controller.signal);
@@ -138,19 +150,18 @@ export default function App(): React.JSX.Element {
 
             setCameras([]);
             setSelectedStreamId(null);
-            setCameraError(getErrorMessage(error));
+            notifyError("摄像头列表加载失败", getErrorMessage(error));
         } finally {
             if (requestId === cameraRequestIdRef.current) {
                 setCamerasLoading(false);
             }
         }
-    }, [apiClient, clientConfiguration.error]);
+    }, [apiClient, clientConfiguration.error, notifyError, rtspSetup]);
 
     const refreshSnapshot = useCallback(async (): Promise<void> => {
         if (apiClient === null || selectedStreamId === null || selectedCamera?.snapshotAvailable !== true) {
             snapshotAbortRef.current?.abort();
             setSnapshotLoading(false);
-            setSnapshotError(null);
             return;
         }
 
@@ -158,7 +169,6 @@ export default function App(): React.JSX.Element {
         const controller = new AbortController();
         snapshotAbortRef.current = controller;
         setSnapshotLoading(true);
-        setSnapshotError(null);
 
         try {
             const blob = await apiClient.getSnapshot(selectedStreamId, controller.signal);
@@ -169,16 +179,17 @@ export default function App(): React.JSX.Element {
             addSnapshotToHistory(selectedStreamId, blob);
         } catch (error) {
             if (!controller.signal.aborted) {
-                setSnapshotError(getErrorMessage(error));
+                notifyError("截图获取失败", getErrorMessage(error));
             }
         } finally {
             if (!controller.signal.aborted) {
                 setSnapshotLoading(false);
             }
         }
-    }, [addSnapshotToHistory, apiClient, selectedCamera?.snapshotAvailable, selectedStreamId]);
+    }, [addSnapshotToHistory, apiClient, notifyError, selectedCamera?.snapshotAvailable, selectedStreamId]);
 
     useEffect(() => {
+        if (rtspSetup?.configured !== true) return;
         if (hasLoadedInitialCamerasRef.current && !pendingCameraRefreshRef.current) {
             return;
         }
@@ -186,7 +197,7 @@ export default function App(): React.JSX.Element {
         hasLoadedInitialCamerasRef.current = true;
         pendingCameraRefreshRef.current = false;
         void refreshCameras();
-    }, [refreshCameras]);
+    }, [refreshCameras, rtspSetup]);
 
     useEffect(() => {
         void refreshSnapshot();
@@ -207,16 +218,17 @@ export default function App(): React.JSX.Element {
         }
     }, [cameras, selectedStreamId, stopPreview]);
 
-    const applyConnection = (): void => {
+    const applyConnection = (next: ConnectionConfiguration, status: SetupStatus): void => {
+        pendingSetupRef.current = status;
+        if (next.apiUrl === connection.apiUrl && next.bearerToken === connection.bearerToken) return;
+        cameraAbortRef.current?.abort();
+        cameraRequestIdRef.current += 1;
         void stopPreview();
         clearSnapshotHistory();
         setCameras([]);
         setSelectedStreamId(null);
-        pendingCameraRefreshRef.current = true;
-        setConnection({
-            apiUrl: draftApiUrl.trim(),
-            bearerToken: draftBearerToken
-        });
+        pendingCameraRefreshRef.current = false;
+        setConnection(next);
     };
 
     const selectCamera = async (streamId: string): Promise<void> => {
@@ -226,23 +238,15 @@ export default function App(): React.JSX.Element {
 
         await stopPreview();
         setSelectedStreamId(streamId);
-        setCopyMessage(null);
     };
 
-    const copyRtspUrl = async (): Promise<void> => {
-        if (selectedCamera === null) {
-            return;
-        }
-
-        try {
-            await navigator.clipboard.writeText(selectedCamera.rtspUrl);
-            setCopyMessage("RTSP 地址已复制。");
-        } catch {
-            setCopyMessage("无法访问剪贴板，请手动复制 RTSP 地址。");
-        }
-    };
+    if (rtspSetup?.configured !== true) {
+        return <ConfigProvider locale={zhCN} theme={{ algorithm: theme === "dark" ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm, token: { colorPrimary: "#2878d4", borderRadius: 10 } }}>
+            <SetupGate client={apiClient} connection={connection} onConnected={applyConnection} onReady={setRtspSetup} /></ConfigProvider>;
+    }
 
     return (
+        <ConfigProvider locale={zhCN} theme={{ algorithm: theme === "dark" ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm, token: { colorPrimary: "#2878d4", borderRadius: 10 } }}>
         <main className="app-shell">
             <header className="app-header">
                 <div>
@@ -251,25 +255,34 @@ export default function App(): React.JSX.Element {
                     <p className="subtitle">通过 WebRTC 在浏览器中预览米家摄像头画面。</p>
                 </div>
                 <div className="header-actions">
-                    <button className="secondary" type="button" onClick={toggleTheme}>
+                    <Button icon={<BulbOutlined />} onClick={toggleTheme}>
                         {theme === "light" ? "切换深色" : "切换浅色"}
-                    </button>
-                    <button className="secondary" type="button" onClick={() => void refreshCameras()} disabled={camerasLoading}>
-                        {camerasLoading ? "正在刷新…" : "刷新摄像头"}
-                    </button>
+                    </Button>
+                    <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>重新配置</Button>
+                    <Button icon={<ReloadOutlined />} onClick={() => void refreshCameras()} loading={camerasLoading}>
+                        刷新摄像头
+                    </Button>
                 </div>
             </header>
 
-            <ConnectionSettings
-                apiUrl={draftApiUrl}
-                bearerToken={draftBearerToken}
-                busy={camerasLoading}
-                onApiUrlChange={setDraftApiUrl}
-                onBearerTokenChange={setDraftBearerToken}
-                onSubmit={applyConnection}
-            />
-
-            {cameraError !== null && <p className="error-banner">{cameraError}</p>}
+            {rtspSetup.applyPending && <Alert className="setup-notice" type="info" showIcon title="配置已保存但尚未生效，请重新打开配置并重试应用。" />}
+            {settingsOpen && apiClient !== null && <SetupWizard client={apiClient} connection={connection} onConnected={applyConnection} editing onCancel={() => {
+                if (pendingSetupRef.current !== null) {
+                    pendingCameraRefreshRef.current = true;
+                    setRtspSetup(pendingSetupRef.current);
+                    pendingSetupRef.current = null;
+                }
+                setSettingsOpen(false);
+            }}
+                onComplete={(status) => {
+                    void stopPreview();
+                    snapshotAbortRef.current?.abort();
+                    clearSnapshotHistory();
+                    pendingCameraRefreshRef.current = true;
+                    pendingSetupRef.current = null;
+                    setRtspSetup(status); setSettingsOpen(false);
+                }} />}
+            <ErrorDrawer notification={notification} onClose={closeNotification} />
 
             <div className="workspace-grid">
                 <section className="camera-browser card">
@@ -290,6 +303,7 @@ export default function App(): React.JSX.Element {
                 <VideoPreview
                     camera={selectedCamera}
                     state={previewState}
+                    rtspUsername={rtspSetup.username}
                     videoRef={videoRef}
                     onStart={() => {
                         if (selectedStreamId !== null) {
@@ -304,41 +318,12 @@ export default function App(): React.JSX.Element {
                     snapshotUrl={getLatestSnapshotUrl(snapshotHistory, selectedStreamId)}
                     historyItems={getSnapshotsForStream(snapshotHistory, selectedStreamId)}
                     loading={snapshotLoading}
-                    message={snapshotError}
                     onRefresh={() => void refreshSnapshot()}
                     onDeleteSnapshot={removeSnapshotFromHistory}
                 />
             </div>
 
-            {selectedCamera !== null && (
-                <section className="stream-details card">
-                    <div>
-                        <p className="eyebrow">辅助信息</p>
-                        <h2>{selectedCamera.streamId}</h2>
-                        <dl>
-                            <div>
-                                <dt>源编码</dt>
-                                <dd>{selectedCamera.sourceCodec}</dd>
-                            </div>
-                            <div>
-                                <dt>最后收帧</dt>
-                                <dd>{formatDateTime(selectedCamera.lastReceivedAt)}</dd>
-                            </div>
-                            <div>
-                                <dt>RTSP 地址</dt>
-                                <dd className="rtsp-url">{selectedCamera.rtspUrl}</dd>
-                            </div>
-                        </dl>
-                    </div>
-                    <div className="details-actions">
-                        <button className="secondary" type="button" onClick={() => void copyRtspUrl()}>
-                            复制 RTSP 地址
-                        </button>
-                        {copyMessage !== null && <p className="help-text">{copyMessage}</p>}
-                    </div>
-                </section>
-            )}
-        </main>
+        </main></ConfigProvider>
     );
 }
 
@@ -369,22 +354,6 @@ function getDefaultApiUrl(): string {
 
     const protocol = window.location.protocol === "https:" ? "https:" : "http:";
     return `${protocol}//${window.location.hostname}:5080`;
-}
-
-function formatDateTime(value: string | null): string {
-    if (value === null) {
-        return "尚未收到视频数据";
-    }
-
-    const timestamp = new Date(value);
-    if (Number.isNaN(timestamp.getTime())) {
-        return value;
-    }
-
-    return new Intl.DateTimeFormat("zh-CN", {
-        dateStyle: "medium",
-        timeStyle: "medium"
-    }).format(timestamp);
 }
 
 function getErrorMessage(error: unknown): string {

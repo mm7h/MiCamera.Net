@@ -19,8 +19,9 @@ internal sealed class MilocoSessionClient : IDisposable
     private readonly MiCameraServerOptions _options;
     private readonly ILogger<MilocoSessionClient> _logger;
     private readonly SemaphoreSlim _authenticationLock = new(1, 1);
-    private readonly IFlurlClient _client;
-    private readonly X509Certificate2? _trustedServerCertificate;
+    private Lazy<IFlurlClient> _connection;
+    private IFlurlClient _client => this._connection.Value;
+    private X509Certificate2? _trustedServerCertificate;
     private volatile bool _isAuthenticated;
     private bool _disposed;
 
@@ -30,43 +31,43 @@ internal sealed class MilocoSessionClient : IDisposable
     {
         this._options = options;
         this._logger = logger;
-        this.BaseUri = new Uri(options.Miloco.BaseUrl, UriKind.Absolute);
         this.Cookies = new CookieContainer();
-        this._trustedServerCertificate = LoadTrustedServerCertificate(options.Miloco.TrustedServerCertificatePath);
+        this._connection = new Lazy<IFlurlClient>(this.CreateClient);
+    }
 
-        this._client = new FlurlClientBuilder(this.BaseUri.AbsoluteUri.TrimEnd('/'))
+    private IFlurlClient CreateClient()
+    {
+        this._trustedServerCertificate = LoadTrustedServerCertificate(this._options.Miloco.TrustedServerCertificatePath);
+        if (this.AllowInvalidServerCertificate)
+            this._logger.LogWarning("Miloco server certificate validation is disabled for {Host}.", this.BaseUri.GetLeftPart(UriPartial.Authority));
+        return new FlurlClientBuilder(this.BaseUri.AbsoluteUri.TrimEnd('/'))
             .ConfigureInnerHandler(handler =>
             {
                 handler.UseCookies = true;
                 handler.CookieContainer = this.Cookies;
                 handler.AllowAutoRedirect = false;
-
-                if (options.Miloco.AllowInvalidServerCertificate || this._trustedServerCertificate is not null)
-                {
+                if (this.AllowInvalidServerCertificate || this.HasTrustedServerCertificate)
                     handler.ServerCertificateCustomValidationCallback = (_, certificate, _, errors) =>
                         this.ValidateServerCertificate(certificate, errors);
-                }
             })
             .ConfigureHttpClient(client => client.Timeout = Timeout.InfiniteTimeSpan)
             .Build();
-
-        if (options.Miloco.AllowInvalidServerCertificate)
-        {
-            this._logger.LogWarning(
-                "Miloco server certificate validation is disabled for {MilocoBaseUrl}.",
-                this.BaseUri.GetLeftPart(UriPartial.Authority));
-        }
-        else if (this._trustedServerCertificate is not null)
-        {
-            this._logger.LogInformation(
-                "Miloco server certificate is pinned for {MilocoBaseUrl}.",
-                this.BaseUri.GetLeftPart(UriPartial.Authority));
-        }
     }
 
-    public Uri BaseUri { get; }
+    public Uri BaseUri => new(this._options.Miloco.BaseUrl, UriKind.Absolute);
 
-    public CookieContainer Cookies { get; }
+    public CookieContainer Cookies { get; private set; }
+
+    // Called only after all workers using this session have stopped.
+    public void Reset()
+    {
+        if (this._connection.IsValueCreated) this._client.Dispose();
+        this._trustedServerCertificate?.Dispose();
+        this._trustedServerCertificate = null;
+        this.Cookies = new CookieContainer();
+        this._isAuthenticated = false;
+        this._connection = new Lazy<IFlurlClient>(this.CreateClient);
+    }
 
     public bool AllowInvalidServerCertificate => this._options.Miloco.AllowInvalidServerCertificate;
 
@@ -160,6 +161,17 @@ internal sealed class MilocoSessionClient : IDisposable
         }
     }
 
+    public async Task<System.Text.Json.JsonElement> GetCamerasAsync(CancellationToken cancellationToken)
+    {
+        await this.EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
+        using IFlurlResponse response = await this._client.Request("api", "miot", "camera_list")
+            .AllowAnyHttpStatus().WithTimeout(this._options.Miloco.RequestTimeout)
+            .GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!response.ResponseMessage.IsSuccessStatusCode)
+            throw new MilocoAuthenticationException($"获取 Miloco 摄像头失败（HTTP {response.StatusCode}）。请重新连接后重试。");
+        return MilocoResponseValidator.ReadData(await response.GetStringAsync().ConfigureAwait(false));
+    }
+
     public void InvalidateAuthentication()
     {
         this._isAuthenticated = false;
@@ -188,7 +200,7 @@ internal sealed class MilocoSessionClient : IDisposable
         }
 
         this._disposed = true;
-        this._client.Dispose();
+        if (this._connection.IsValueCreated) this._client.Dispose();
         this._trustedServerCertificate?.Dispose();
         this._authenticationLock.Dispose();
     }
@@ -204,13 +216,13 @@ internal sealed class MilocoSessionClient : IDisposable
         if (socketError is SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain)
         {
             return new MilocoAuthenticationException(
-                "无法解析 Miloco 主机名。请检查 Miloco.BaseUrl 或 MILOCO_BASE_URL；从宿主机直接启动时，应填写 Miloco 的局域网 IP，不能使用仅容器网络可见的服务名。");
+                "无法解析 Miloco 主机名。请检查 网页中的 Miloco 地址；从宿主机直接启动时，应填写 Miloco 的局域网 IP，不能使用仅容器网络可见的服务名。");
         }
 
         if (socketError == SocketError.ConnectionRefused)
         {
             return new MilocoAuthenticationException(
-                "Miloco 拒绝了连接。请确认服务已启动，并检查 Miloco.BaseUrl 或 MILOCO_BASE_URL 中的地址和端口（默认端口为 8000）。");
+                "Miloco 拒绝了连接。请确认服务已启动，并检查 网页中的 Miloco 地址 中的地址和端口（默认端口为 8000）。");
         }
 
         if (ContainsException<AuthenticationException>(exception))
@@ -222,17 +234,17 @@ internal sealed class MilocoSessionClient : IDisposable
         if (ContainsException<FlurlHttpTimeoutException>(exception) || socketError == SocketError.TimedOut)
         {
             return new MilocoAuthenticationException(
-                "连接 Miloco 超时。请检查服务状态、网络、防火墙以及 Miloco.BaseUrl 或 MILOCO_BASE_URL；必要时可增大 RequestTimeout。");
+                "连接 Miloco 超时。请检查服务状态、网络、防火墙以及 网页中的 Miloco 地址；必要时可增大 RequestTimeout。");
         }
 
         if (ContainsException<HttpRequestException>(exception) || socketError is not null)
         {
             return new MilocoAuthenticationException(
-                "无法连接 Miloco。请检查 Miloco.BaseUrl 或 MILOCO_BASE_URL、服务状态、网络和防火墙。");
+                "无法连接 Miloco。请检查 网页中的 Miloco 地址、服务状态、网络和防火墙。");
         }
 
         return new MilocoAuthenticationException(
-            "Miloco 登录请求未能完成。请检查 Miloco.BaseUrl 或 MILOCO_BASE_URL、TLS 设置和 Miloco 版本兼容性；为保护认证信息，未输出底层响应内容。");
+            "Miloco 登录请求未能完成。请检查 网页中的 Miloco 地址、TLS 设置和 Miloco 版本兼容性；为保护认证信息，未输出底层响应内容。");
     }
 
     private static string CombinePath(string prefix, string suffix)
@@ -290,7 +302,7 @@ internal sealed class MilocoSessionClient : IDisposable
     private static MilocoAuthenticationException CreateLocalLoginFailure(int statusCode) =>
         statusCode is 401 or 403
             ? new MilocoAuthenticationException(
-                $"Miloco 本地登录被拒绝（HTTP {statusCode}）。请检查用户名和本地密码；密码应为小写 MD5 值，不是小米账号密码。")
+                $"Miloco 本地登录被拒绝（HTTP {statusCode}）。请检查六位 PIN 码，不是小米账号密码。")
             : new MilocoAuthenticationException(
                 $"Miloco 本地登录失败（HTTP {statusCode}）。请检查 Miloco 服务状态，以及当前版本是否与本项目兼容。响应内容未输出，以保护认证信息。");
 

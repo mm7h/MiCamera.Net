@@ -10,4 +10,6 @@ public interface INormalizedVideoStreamProvider
         CancellationToken cancellationToken = default);
 
     bool TryGetCodecParameters(string streamId, out VideoCodecParameters? parameters);
+
+    void RequestKeyFrame(string streamId);
 }

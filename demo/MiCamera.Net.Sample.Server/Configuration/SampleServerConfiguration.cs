@@ -33,7 +33,7 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         {
             if (string.Equals(property.Name, "Streams", StringComparison.OrdinalIgnoreCase))
             {
-                throw new JsonException("Top-level Streams is no longer supported. Move it to MediaServer.Rtsp.Streams.");
+                throw new JsonException("Top-level Streams is no longer supported. Configure streams through the web UI.");
             }
 
             if (legacySections.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
@@ -43,34 +43,23 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         }
 
         MiCameraServerOptions serverOptions = document.RootElement.Deserialize<MiCameraServerOptions>(serializerOptions)!;
+        serverOptions.Initialization.WebManaged = true;
+        // User-managed values come exclusively from SQLite, including on upgraded deployments.
+        serverOptions.Miloco.BaseUrl = string.Empty;
+        serverOptions.Miloco.Username = "admin";
+        serverOptions.Miloco.Password = string.Empty;
+        serverOptions.Streams = [];
         ConfigurationFile configuration = document.RootElement.Deserialize<ConfigurationFile>(serializerOptions)!;
         if (configuration.MediaServer is null)
         {
             throw new JsonException("MediaServer must be a JSON object.");
         }
 
-        JsonElement mediaServer = GetProperty(document.RootElement, "MediaServer");
-        JsonElement rtsp = GetProperty(mediaServer, "Rtsp");
-        JsonElement streams = GetProperty(rtsp, "Streams");
-        // The JSON layout groups streams under RTSP, but the core also supplies WebRTC and snapshots.
-        serverOptions.Streams = streams.ValueKind == JsonValueKind.Undefined
-            ? []
-            : streams.Deserialize<List<CameraStreamOptions>>(serializerOptions)
-                ?? throw new JsonException("MediaServer.Rtsp.Streams must be a JSON array.");
-
-        return new SampleServerConfiguration(serverOptions, configuration.MediaServer.ToRuntimeOptions());
-    }
-
-    private static JsonElement GetProperty(JsonElement element, string name)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return default;
-        }
-
-        // Match the serializer's case-insensitive names and last-property-wins behavior.
-        return element.EnumerateObject()
-            .LastOrDefault(property => string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)).Value;
+        MiCameraRtspOptions media = configuration.MediaServer.ToRuntimeOptions();
+        media.Rtsp.Username = string.Empty;
+        media.Rtsp.Password = string.Empty;
+        media.Rtsp.WebManaged = true;
+        return new SampleServerConfiguration(serverOptions, media);
     }
 
     private sealed class ConfigurationFile

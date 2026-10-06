@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Standard-library-only deployment helper. Never prints secrets, response bodies, or cookies."""
-import hashlib
-import http.cookiejar
 import ipaddress
 import json
 import os
@@ -20,10 +18,8 @@ class DeploymentError(Exception):
 
 
 SECRET_PATTERNS = {
-    "miloco_password_md5": re.compile(r"[0-9a-f]{32}"),
     "miloco_jwt_secret": re.compile(r"[0-9a-f]{64}"),
     "rtsp_api_token": re.compile(r"[0-9a-f]{64}"),
-    "rtsp_password": re.compile(r"[0-9a-f]{48}"),
 }
 SECRET_LIMIT = 4097
 LICENSE_ACKNOWLEDGEMENT = "User acknowledged the deployment license notice; this is not a license grant.\n"
@@ -139,7 +135,7 @@ def read_secret(name, allow_empty=False):
 def write_secret(name, value):
     if value and not SECRET_PATTERNS[name].fullmatch(value):
         raise DeploymentError(f"secret 值格式无效：{name}。")
-    if not value and name != "miloco_password_md5":
+    if not value:
         raise DeploymentError(f"secret 值不能为空：{name}。")
     # Docker Compose mounts file-backed secrets with their host file mode.  The
     # bridge runs as an unprivileged UID, while the enclosing secrets directory
@@ -150,7 +146,7 @@ def write_secret(name, value):
 def ensure_secret(name, value):
     path = secret_path(name)
     if path.exists():
-        read_secret(name, allow_empty=name == "miloco_password_md5")
+        read_secret(name)
     else:
         write_secret(name, value)
 
@@ -171,7 +167,7 @@ def deployment_lan_ip(directory):
     return value
 
 
-def validate_deployment_config(lan_ip, require_streams):
+def validate_deployment_config(lan_ip):
     path = state_dir() / "MiCameraConfig.json"
     reject_symlink(path, "MiCameraConfig.json")
     if not path.is_file():
@@ -181,12 +177,8 @@ def validate_deployment_config(lan_ip, require_streams):
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise DeploymentError("MiCameraConfig.json 不是有效 JSON。") from error
     miloco = document.get("Miloco") if isinstance(document, dict) else None
-    if not isinstance(miloco, dict) or miloco.get("Password", "") != "":
-        raise DeploymentError("正式部署的 MiCameraConfig.json 不能包含 Miloco.Password。")
-    if miloco.get("Username") != "admin":
-        raise DeploymentError("正式部署的 Miloco.Username 必须为 admin。")
-    if miloco.get("BaseUrl") != f"https://{lan_ip}:8000":
-        raise DeploymentError("MiCameraConfig.json 的 Miloco.BaseUrl 必须匹配当前 LAN_IP。")
+    if not isinstance(miloco, dict) or any(key in miloco for key in ("BaseUrl", "Username", "Password")):
+        raise DeploymentError("Miloco 地址及凭据应通过网页配置，不能出现在部署配置中。")
     if miloco.get("AllowInvalidServerCertificate") is not False:
         raise DeploymentError("正式部署必须启用 Miloco 证书固定，不能跳过 TLS 证书校验。")
     if miloco.get("TrustedServerCertificatePath") != "/run/configs/miloco-server-cert.pem":
@@ -194,13 +186,13 @@ def validate_deployment_config(lan_ip, require_streams):
     if any(name.lower() in {"rtsp", "http", "media", "webrtc", "snapshot"} for name in document):
         raise DeploymentError("旧的顶层媒体配置不再支持，请迁移至 MediaServer。")
     if any(name.lower() == "streams" for name in document):
-        raise DeploymentError("旧的顶层 Streams 不再支持，请迁移至 MediaServer.Rtsp.Streams。")
+        raise DeploymentError("旧的顶层 Streams 不再支持，请通过网页选择摄像头。")
     media_server = document.get("MediaServer")
     if not isinstance(media_server, dict):
         raise DeploymentError("正式部署缺少 MediaServer 配置。")
     rtsp = media_server.get("Rtsp")
     if not isinstance(rtsp, dict) or rtsp.get("ListenAddress") != lan_ip or rtsp.get("Port") != 8554 or \
-            rtsp.get("Username") != "micamera" or rtsp.get("Password", "") != "":
+            any(key in rtsp for key in ("Username", "Password", "CredentialsFilePath", "Streams")):
         raise DeploymentError("正式部署的 MediaServer.Rtsp 配置无效或包含密码。")
     if media_server.get("ListenAddress") != f"http://{lan_ip}:5080" or \
             media_server.get("BearerToken", "") != "" or media_server.get("AllowedOrigins") != [f"http://{lan_ip}:5081"]:
@@ -212,9 +204,7 @@ def validate_deployment_config(lan_ip, require_streams):
     ffmpeg = media_server.get("FFmpeg")
     if not isinstance(ffmpeg, dict) or ffmpeg.get("Path") != "/app/native":
         raise DeploymentError("正式部署的 MediaServer.FFmpeg 配置无效。")
-    streams = rtsp.get("Streams")
-    if require_streams and (not isinstance(streams, list) or not streams):
-        raise DeploymentError("非交互部署至少需要配置一个摄像头流。")
+
     return document
 
 
@@ -239,32 +229,52 @@ def initialize(lan_ip):
         atomic_write(env_path, f"LAN_IP={lan_ip}\n")
     ensure_secret("miloco_jwt_secret", os.urandom(32).hex())
     ensure_secret("rtsp_api_token", os.urandom(32).hex())
-    ensure_secret("rtsp_password", os.urandom(24).hex())
-    ensure_secret("miloco_password_md5", "")
     miloco_directory = directory / "miloco"
     miloco_directory.mkdir(mode=0o700, exist_ok=True)
     os.chmod(miloco_directory, 0o700)
     config_path = directory / "MiCameraConfig.json"
     if not config_path.exists():
         atomic_write(config_path, json.dumps({
-            "Miloco": {"BaseUrl": f"https://{lan_ip}:8000", "Username": "admin", "Password": "",
-                       "AllowInvalidServerCertificate": False,
+            "Miloco": {"AllowInvalidServerCertificate": False,
                        "TrustedServerCertificatePath": "/run/configs/miloco-server-cert.pem", "RequestTimeout": 15},
             "Streaming": {"ConnectTimeout": 10, "FirstKeyFrameTimeout": 60, "IdleTimeout": 60,
                           "MaxMessageBytes": 4194304, "SubscriberBufferCapacity": 32},
             "Reconnect": {"InitialDelay": 1, "MaximumDelay": 30, "BackoffMultiplier": 2, "JitterRatio": 0.2},
             "MediaServer": {
-                "ListenAddress": f"http://{lan_ip}:5080", "BearerToken": "",
+                "ListenAddress": f"http://{lan_ip}:5080",
                 "AllowedOrigins": [f"http://{lan_ip}:5081"],
-                "Rtsp": {"ListenAddress": lan_ip, "Port": 8554, "PathPrefix": "/live", "Username": "micamera",
-                         "Password": "", "RtpMtu": 1200, "SessionTimeout": 60, "Streams": []},
+                "Rtsp": {"ListenAddress": lan_ip, "Port": 8554, "PathPrefix": "/live",
+                         "RtpMtu": 1200, "SessionTimeout": 60},
                 "WebRtc": {"BindAddress": lan_ip, "PortRangeStart": 50000, "PortRangeEnd": 50100, "Enabled": True,
-                           "IceServers": [], "IceGatheringTimeout": 5, "PendingSessionTimeout": 30,
-                           "DisconnectedGracePeriod": 15, "TranscoderIdleTimeout": 10, "MaxPeersPerStream": 4},
+                           "IceGatheringTimeout": 5, "PendingSessionTimeout": 30,
+                           "DisconnectedGracePeriod": 15, "PlayoutDelay": 0.5, "TranscoderIdleTimeout": 10,
+                           "MaxPeersPerStream": 4},
                 "FFmpeg": {"Path": "/app/native", "H264EncoderName": "libx264", "H264Bitrate": 2500000,
                            "H264Preset": "veryfast", "H264MaxWidth": 1920, "H264MaxHeight": 1080,
                            "KeyFrameInterval": 2},
                 "Snapshot": {"Enabled": True, "JpegQuality": 85}}}, indent=2) + "\n", 0o644)
+    remove_file_managed_settings()
+
+
+def remove_file_managed_settings():
+    path = state_dir() / "MiCameraConfig.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    rtsp = document["MediaServer"]["Rtsp"]
+    miloco = document["Miloco"]
+    removed = {"Miloco": ("BaseUrl", "Username", "Password"),
+               "Rtsp": ("Username", "Password", "CredentialsFilePath", "Streams")}
+    if not any(key in miloco for key in removed["Miloco"]) and not any(key in rtsp for key in removed["Rtsp"]):
+        return
+    # Preserve old files for backup; do not import their credentials into SQLite.
+    backup = state_dir() / "MiCameraConfig.before-web-setup.json"
+    reject_symlink(backup, backup.name)
+    if not backup.exists():
+        atomic_write(backup, path.read_text(encoding="utf-8"), 0o600)
+    for key in removed["Miloco"]:
+        miloco.pop(key, None)
+    for key in removed["Rtsp"]:
+        rtsp.pop(key, None)
+    atomic_write(path, json.dumps(document, indent=2) + "\n", 0o644)
 
 
 def validate_state(lan_ip):
@@ -301,7 +311,7 @@ def validate_state(lan_ip):
         raise DeploymentError("非交互部署需要预置 Miloco 证书（.deploy/miloco/cert/cert.pem）。")
     for name in SECRET_PATTERNS:
         read_secret(name)
-    validate_deployment_config(lan_ip, require_streams=True)
+    validate_deployment_config(lan_ip)
 
 
 def runtime_secret(variable, name):
@@ -335,20 +345,12 @@ def normal_data(payload):
     return payload["data"]
 
 
-def login_status(payload):
-    data = normal_data(payload)
-    if not isinstance(data, dict) or type(data.get("is_logged_in")) is not bool:
-        raise DeploymentError("Miloco 登录状态协议不兼容，不能将 HTTP 200 当作授权成功。")
-    return data["is_logged_in"]
-
-
 def miloco_opener():
     base_url = os.environ["MILOCO_BASE_URL"]
     parsed = urllib.parse.urlparse(base_url)
     if parsed.scheme != "https" or parsed.hostname != os.environ["LAN_IP"] or parsed.port != 8000:
         raise DeploymentError("部署探测只允许访问本次配置的局域网 Miloco HTTPS 接口。")
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
-                                       urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
 
 
 def request_json(opener, url, data=None, headers=None, allowed_statuses=()):
@@ -374,55 +376,6 @@ def request_json(opener, url, data=None, headers=None, allowed_statuses=()):
         raise DeploymentError("服务未返回有效 JSON，可能存在协议不兼容。") from None
 
 
-def authenticated_miloco():
-    opener = miloco_opener()
-    password = runtime_secret("MILOCO_PASSWORD", "miloco_password_md5")
-    normal_data(request_json(opener, os.environ["MILOCO_BASE_URL"] + "/api/auth/login",
-                             {"username": "admin", "password": password}))
-    if not login_status(request_json(opener, os.environ["MILOCO_BASE_URL"] + "/api/miot/login_status")):
-        raise DeploymentError("小米账号尚未授权或授权已失效，请在 Miloco 页面完成绑定后重新检查。")
-    return opener
-
-
-def cameras():
-    opener = authenticated_miloco()
-    data = normal_data(request_json(opener, os.environ["MILOCO_BASE_URL"] + "/api/miot/camera_list"))
-    if not isinstance(data, list) or any(not isinstance(item, dict) or not isinstance(item.get("did"), str) or
-                                        not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", item["did"]) for item in data):
-        raise DeploymentError("摄像头列表协议不兼容，请改为手动填写 DID。")
-    atomic_write(state_dir() / "cameras.json", json.dumps(data, ensure_ascii=False) + "\n")
-    for index, item in enumerate(data, 1):
-        label = str(item.get("name", "未命名摄像头"))
-        label = "".join(char for char in label if char.isprintable())[:80]
-        print(f"  {index}. {label}（DID: {item['did']}，{'在线' if item.get('online') else '离线/未知'}）")
-    print("  0. 手动输入 DID")
-
-
-def stage_stream(did, stream_id, channel, codec):
-    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", did):
-        raise DeploymentError("DID 格式不正确。")
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", stream_id):
-        raise DeploymentError("流名称必须为 1–64 位字母、数字、连字符或下划线。")
-    if not channel.isdecimal() or int(channel) > 2147483647 or codec not in ("H264", "H265"):
-        raise DeploymentError("通道必须为非负整数，编码必须为 H264 或 H265。")
-    document = json.loads((state_dir() / "MiCameraConfig.json").read_text(encoding="utf-8"))
-    streams = document["MediaServer"]["Rtsp"]["Streams"]
-    if any(item["StreamId"].lower() == stream_id.lower() for item in streams):
-        raise DeploymentError("StreamId 已存在，请选择其他流名称。")
-    if any(item["CameraDeviceId"] == did and item["Channel"] == int(channel) for item in streams):
-        raise DeploymentError("该摄像头通道已配置。")
-    streams.append({"StreamId": stream_id, "CameraDeviceId": did, "Channel": int(channel),
-                    "Codec": codec, "NominalFrameRate": 30})
-    atomic_write(state_dir() / "MiCameraConfig.pending.json", json.dumps(document, indent=2) + "\n", 0o644)
-
-
-def commit_stream():
-    directory = state_dir()
-    original = directory / "MiCameraConfig.json"
-    atomic_write(directory / "MiCameraConfig.previous.json", original.read_text(encoding="utf-8"), 0o644)
-    os.replace(directory / "MiCameraConfig.pending.json", original)
-
-
 def api_health(path, verbose=False):
     url = os.environ["RTSP_HTTP_LISTEN_URL"] + path
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -439,50 +392,25 @@ def main(arguments):
         initialize(arguments[1])
     elif command == "validate-state":
         validate_state(arguments[1])
-    elif command == "set-password":
-        password = sys.stdin.read(4097)
-        if not password or len(password) > 4096:
-            raise DeploymentError("Miloco 本地密码不能为空或超过 4096 字符。")
-        write_secret("miloco_password_md5", hashlib.md5(password.encode("utf-8")).hexdigest())
+    elif command == "prepare-web-config":
+        remove_file_managed_settings()
     elif command == "miloco-live":
         normal_data(request_json(miloco_opener(), os.environ["MILOCO_BASE_URL"] + "/api/auth/register-status"))
-    elif command == "authorize":
-        authenticated_miloco()
-        print("✓ Miloco 本地登录和小米账号授权有效。")
-    elif command == "cameras":
-        cameras()
-    elif command == "select-camera":
-        data = json.loads((state_dir() / "cameras.json").read_text(encoding="utf-8"))
-        index = int(arguments[1])
-        if index < 1 or index > len(data):
-            raise DeploymentError("摄像头序号不正确。")
-        did = data[index - 1]["did"]
-        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", did):
-            raise DeploymentError("摄像头 DID 不符合部署配置格式，请手工核对。")
-        print(did)
-    elif command == "stage-stream":
-        stage_stream(*arguments[1:])
-    elif command == "commit-stream":
-        commit_stream()
-    elif command == "rollback-stream":
-        directory = state_dir()
-        atomic_write(directory / "MiCameraConfig.json", (directory / "MiCameraConfig.previous.json").read_text(encoding="utf-8"), 0o644)
-    elif command == "stream-count":
-        print(len(json.loads((state_dir() / "MiCameraConfig.json").read_text(encoding="utf-8"))["MediaServer"]["Rtsp"]["Streams"]))
     elif command == "live":
         if api_health("/api/health/live").get("live") is not True:
             raise DeploymentError("后端存活检查失败。")
     elif command == "ready":
         if api_health("/api/health/ready", "--verbose" in arguments).get("ready") is not True:
             raise DeploymentError("后端媒体能力或摄像头视频尚未就绪。")
+    elif command == "deployment-ready":
+        if api_health("/api/health/live").get("live") is not True:
+            raise DeploymentError("后端存活检查失败。")
     elif command == "status":
         api_health("/api/health/ready", True)
     elif command == "ack-license":
         atomic_write(state_dir() / "license-ack", LICENSE_ACKNOWLEDGEMENT)
-    elif command == "credentials":
-        print(f"RTSP_API_TOKEN={read_secret('rtsp_api_token')}")
-        print("RTSP_USERNAME=micamera")
-        print(f"RTSP_PASSWORD={read_secret('rtsp_password')}")
+    elif command in ("credentials", "add-camera"):
+        print("请进入前端页面的重新配置入口修改摄像头或 RTSP 凭据；密码不会回显，保存后立即生效，无需重启服务。")
     else:
         raise DeploymentError("未知部署辅助命令。")
 

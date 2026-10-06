@@ -1,6 +1,6 @@
 ﻿namespace MiCamera.Net.Server.Protocol.Miloco;
 
-internal sealed class MilocoAuthenticationException : Exception
+public sealed class MilocoAuthenticationException : Exception
 {
     public MilocoAuthenticationException(string message)
         : base(message)

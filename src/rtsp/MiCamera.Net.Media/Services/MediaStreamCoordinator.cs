@@ -19,7 +19,15 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
     private readonly MiCameraServerOptions _serverOptions;
     private readonly MiCameraRtspOptions _rtspOptions;
     private readonly ILogger<MediaStreamCoordinator> _logger;
-    private readonly IReadOnlyDictionary<string, StreamPipeline> _pipelines;
+    private volatile Lazy<IReadOnlyDictionary<string, StreamPipeline>> _initializedPipelines;
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private CancellationToken _hostToken;
+    private CancellationTokenSource? _generation;
+    private Task _workers = Task.CompletedTask;
+    private bool _suspended;
+    private static readonly IReadOnlyDictionary<string, StreamPipeline> EmptyPipelines = new Dictionary<string, StreamPipeline>();
+    private IReadOnlyDictionary<string, StreamPipeline> _pipelines => this._serverOptions.Initialization.Configured
+        ? this._initializedPipelines.Value : EmptyPipelines;
 
     public MediaStreamCoordinator(
         ICameraStreamProvider source,
@@ -31,11 +39,13 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
         this._serverOptions = serverOptions;
         this._rtspOptions = rtspOptions;
         this._logger = logger;
-        this._pipelines = serverOptions.Streams.ToDictionary(
-            stream => stream.StreamId,
-            stream => new StreamPipeline(stream, rtspOptions, logger),
-            StringComparer.OrdinalIgnoreCase);
+        this._initializedPipelines = this.CreatePipelines();
     }
+
+    private Lazy<IReadOnlyDictionary<string, StreamPipeline>> CreatePipelines() => new(() => this._serverOptions.Streams.ToDictionary(
+            stream => stream.StreamId,
+            stream => new StreamPipeline(stream, this._rtspOptions, this._logger),
+            StringComparer.OrdinalIgnoreCase));
 
     public async IAsyncEnumerable<VideoAccessUnit> SubscribeAsync(string streamId, VideoCodec? requestedCodec = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -63,6 +73,8 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
         return pipeline.TryGetSnapshot(out snapshot);
     }
 
+    public void RequestKeyFrame(string streamId) => this.GetPipeline(streamId).RequestKeyFrame();
+
     public bool CanProvide(string streamId, VideoCodec codec, out string? reason)
     {
         if (!this._pipelines.TryGetValue(streamId, out StreamPipeline? pipeline))
@@ -76,6 +88,7 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        this._hostToken = stoppingToken;
         FFmpegRuntime.Configure(this._rtspOptions.Media);
         if (!FFmpegRuntime.IsAvailable)
         {
@@ -84,21 +97,50 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
                 "FFmpeg native libraries are unavailable. RTSP passthrough remains available; snapshots and H.265 WebRTC transcoding are disabled.");
         }
 
-        Task[] workers = this._pipelines.Values
-            .Select(pipeline => pipeline.RunAsync(this._source, stoppingToken))
-            .ToArray();
-
-        await Task.WhenAll(workers).ConfigureAwait(false);
+        await this._serverOptions.Initialization.WaitAsync(stoppingToken).ConfigureAwait(false);
+        await this._lifecycleLock.WaitAsync(stoppingToken).ConfigureAwait(false);
+        try { if (!this._suspended) this.StartWorkers(); }
+        finally { this._lifecycleLock.Release(); }
+        try { await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false); }
+        finally { await this.SuspendAsync().ConfigureAwait(false); }
     }
 
-    public override Task StopAsync(CancellationToken cancellationToken)
+    public async Task SuspendAsync()
     {
-        foreach (StreamPipeline pipeline in this._pipelines.Values)
+        await this._lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
         {
-            pipeline.Stop();
+            this._suspended = true;
+            this._generation?.Cancel();
+            foreach (StreamPipeline pipeline in this._pipelines.Values) pipeline.Stop();
+            await this._workers.ConfigureAwait(false);
+            this._generation?.Dispose();
+            this._generation = null;
+            foreach (StreamPipeline pipeline in this._pipelines.Values) pipeline.Dispose();
         }
+        finally { this._lifecycleLock.Release(); }
+    }
 
-        return base.StopAsync(cancellationToken);
+    public async Task ResumeAsync()
+    {
+        await this._lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            this._hostToken.ThrowIfCancellationRequested();
+            this._initializedPipelines = this.CreatePipelines();
+            this._suspended = false;
+            this.StartWorkers();
+        }
+        finally { this._lifecycleLock.Release(); }
+    }
+
+    private void StartWorkers()
+    {
+        if (this._generation is not null) return;
+        this._generation = CancellationTokenSource.CreateLinkedTokenSource(this._hostToken);
+        CancellationToken token = this._generation.Token;
+        this._workers = Task.WhenAll(this._pipelines.Values
+            .Select(pipeline => Task.Run(() => pipeline.RunAsync(this._source, token))));
     }
 
     public override void Dispose()

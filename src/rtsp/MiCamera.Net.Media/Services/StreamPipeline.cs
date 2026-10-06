@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Abstractions.Common.Models;
 using MiCamera.Net.Abstractions.ConfigSettings;
@@ -7,6 +7,7 @@ using MiCamera.Net.Media.Runtime;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 
 namespace MiCamera.Net.Media.Services;
 
@@ -24,6 +25,7 @@ internal sealed class StreamPipeline : IDisposable
     private Exception? _processorFailure;
     private volatile bool _keyFrameRequested;
     private VideoSnapshot? _snapshot;
+    private long _lastSnapshotTicks;
     private int _h264SubscriberCount;
     private bool _disposed;
 
@@ -98,6 +100,8 @@ internal sealed class StreamPipeline : IDisposable
         }
     }
 
+    public void RequestKeyFrame() => this._keyFrameRequested = true;
+
     public bool TryGetSnapshot(out VideoSnapshot? snapshot)
     {
         lock (this._sync)
@@ -105,6 +109,26 @@ internal sealed class StreamPipeline : IDisposable
             snapshot = this._snapshot;
             return snapshot is not null;
         }
+    }
+
+    /// <summary>
+    /// A decoded snapshot costs a full-resolution scale plus a JPEG encode, so it is produced on
+    /// the first key frame and otherwise no more often than the configured interval.
+    /// </summary>
+    private bool SnapshotWanted()
+    {
+        if (!this._options.Snapshot.Enabled)
+        {
+            return false;
+        }
+
+        if (this._snapshot is null)
+        {
+            return true;
+        }
+
+        long interval = (long)this._options.Snapshot.Interval.TotalMilliseconds;
+        return interval <= 0 || Environment.TickCount64 - this._lastSnapshotTicks >= interval;
     }
 
     public bool CanProvide(VideoCodec codec, out string? reason)
@@ -129,11 +153,26 @@ internal sealed class StreamPipeline : IDisposable
 
     public async Task RunAsync(ICameraStreamProvider source, CancellationToken stoppingToken)
     {
+        long window = Stopwatch.GetTimestamp();
+        int inputs = 0, outputs = 0, skipped = 0;
+        long? previousSequence = null;
+        DateTimeOffset? previousArrival = null;
+        double processMs = 0, maxProcessMs = 0, maxQueueMs = 0, maxInputGapMs = 0;
+        TimeSpan previousGcPause = GC.GetTotalPauseDuration();
+        long previousAllocated = GC.GetTotalAllocatedBytes();
         try
         {
             await foreach (EncodedVideoChunk chunk in source.SubscribeAsync(this._stream.StreamId, stoppingToken)
                 .ConfigureAwait(false))
             {
+                inputs++;
+                if (previousSequence is { } previous && chunk.Sequence > previous + 1)
+                    skipped += (int)(chunk.Sequence - previous - 1);
+                previousSequence = chunk.Sequence;
+                if (previousArrival is { } arrival)
+                    maxInputGapMs = Math.Max(maxInputGapMs, (chunk.ReceivedAt - arrival).TotalMilliseconds);
+                previousArrival = chunk.ReceivedAt;
+                maxQueueMs = Math.Max(maxQueueMs, (DateTimeOffset.UtcNow - chunk.ReceivedAt).TotalMilliseconds);
                 VideoAccessUnit unit = this._clock.Create(chunk);
                 this.CacheCodecParameters(unit);
                 this._sourceHub.Publish(unit);
@@ -145,6 +184,7 @@ internal sealed class StreamPipeline : IDisposable
 
                 try
                 {
+                    long processingStarted = Stopwatch.GetTimestamp();
                     ProcessResult? result;
                     lock (this._sync)
                     {
@@ -155,9 +195,15 @@ internal sealed class StreamPipeline : IDisposable
                             processor.RequestKeyFrame();
                         }
 
-                        result = processor?.Process(unit, Volatile.Read(ref this._h264SubscriberCount) > 0);
+                        result = processor?.Process(
+                            unit,
+                            Volatile.Read(ref this._h264SubscriberCount) > 0,
+                            this.SnapshotWanted());
                         if (result is not null) this._processorFailure = null;
                     }
+                    double elapsedMs = Stopwatch.GetElapsedTime(processingStarted).TotalMilliseconds;
+                    processMs += elapsedMs;
+                    maxProcessMs = Math.Max(maxProcessMs, elapsedMs);
 
                     if (result is null)
                     {
@@ -169,12 +215,30 @@ internal sealed class StreamPipeline : IDisposable
                         lock (this._sync)
                         {
                             this._snapshot = result.Snapshot;
+                            this._lastSnapshotTicks = Environment.TickCount64;
                         }
                     }
 
                     foreach (VideoAccessUnit h264 in result.H264AccessUnits)
                     {
+                        outputs++;
                         this._h264Hub.Publish(h264);
+                    }
+                    double seconds = Stopwatch.GetElapsedTime(window).TotalSeconds;
+                    if (seconds >= 30)
+                    {
+                        TimeSpan gcPause = GC.GetTotalPauseDuration();
+                        long allocated = GC.GetTotalAllocatedBytes();
+                        this._logger.LogInformation("Media performance {StreamId}: input={InputFps:F1} fps, H264={OutputFps:F1} fps, skipped={Skipped}, process={MeanMs:F1}/{MaxMs:F1} ms mean/max, queueMax={QueueMs:F1} ms, inputGapMax={InputGapMs:F1} ms, GCpause={GcPauseMs:F1} ms, alloc={AllocatedMb:F1} MB/s, workers={Workers}, pending={Pending}.",
+                            this._stream.StreamId, inputs / seconds, outputs / seconds, skipped,
+                            processMs / inputs, maxProcessMs, maxQueueMs, maxInputGapMs,
+                            (gcPause - previousGcPause).TotalMilliseconds, (allocated - previousAllocated) / seconds / 1_000_000,
+                            ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount);
+                        previousGcPause = gcPause;
+                        previousAllocated = allocated;
+                        window = Stopwatch.GetTimestamp();
+                        inputs = outputs = skipped = 0;
+                        processMs = maxProcessMs = maxQueueMs = maxInputGapMs = 0;
                     }
                 }
                 catch (Exception exception)

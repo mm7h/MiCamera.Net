@@ -10,7 +10,8 @@ internal sealed class VideoBroadcastSubscriber
     public VideoBroadcastSubscriber()
     {
         this.Channel = System.Threading.Channels.Channel.CreateBounded<VideoAccessUnit>(
-            new BoundedChannelOptions(32)
+            // At 20 fps, the maximum two-second playout delay needs 40 frames plus room for bursts.
+            new BoundedChannelOptions(64)
             {
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
@@ -35,7 +36,6 @@ internal sealed class VideoBroadcastSubscriber
                 {
                     if (!this.Channel.Writer.TryWrite(parameters))
                     {
-                        this.Reset();
                         return;
                     }
                 }
@@ -43,7 +43,6 @@ internal sealed class VideoBroadcastSubscriber
 
             if (!this.Channel.Writer.TryWrite(unit))
             {
-                this.Reset();
                 return;
             }
 
@@ -53,16 +52,9 @@ internal sealed class VideoBroadcastSubscriber
 
         if (!this.Channel.Writer.TryWrite(unit))
         {
-            this.Reset();
+            // Keep the decodable backlog. Once a reference is dropped, skip predictions until
+            // the next key frame instead of clearing seconds of video from the queue.
+            this._waitingForKeyFrame = true;
         }
-    }
-
-    private void Reset()
-    {
-        while (this.Channel.Reader.TryRead(out _))
-        {
-        }
-
-        this._waitingForKeyFrame = true;
     }
 }

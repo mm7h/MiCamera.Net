@@ -1,3 +1,4 @@
+import { Button, Empty, Modal } from "antd";
 import { useState } from "react";
 import type { SnapshotHistoryItem } from "../types/snapshot";
 
@@ -20,7 +21,7 @@ export function SnapshotHistory({ items, onDelete }: SnapshotHistoryProps): Reac
                 {items.length > 0 && <span className="camera-count">{items.length}</span>}
             </div>
             {items.length === 0 ? (
-                <p className="empty-state">刷新截图后会在此保留预览和下载记录。</p>
+                <Empty description="刷新截图后会在此保留预览和下载记录。" />
             ) : (
                 <div className="history-list">
                     {items.map((item) => (
@@ -37,22 +38,8 @@ export function SnapshotHistory({ items, onDelete }: SnapshotHistoryProps): Reac
                                     {formatCapturedClock(item.capturedAt)}
                                 </time>
                                 <div className="history-actions">
-                                    <a
-                                        className="icon-button"
-                                        href={item.url}
-                                        download={getDownloadName(item)}
-                                        title="下载"
-                                        aria-label={`下载 ${formatCapturedAt(item.capturedAt)} 的截图`}>
-                                        <DownloadIcon />
-                                    </a>
-                                    <button
-                                        className="icon-button danger"
-                                        type="button"
-                                        onClick={() => onDelete(item.id)}
-                                        title="删除"
-                                        aria-label={`删除 ${formatCapturedAt(item.capturedAt)} 的截图`}>
-                                        <TrashIcon />
-                                    </button>
+                                    <Button type="text" href={item.url} download={getDownloadName(item)} icon={<DownloadIcon />} aria-label={`下载 ${formatCapturedAt(item.capturedAt)} 的截图`} />
+                                    <Button type="text" danger onClick={() => onDelete(item.id)} icon={<TrashIcon />} aria-label={`删除 ${formatCapturedAt(item.capturedAt)} 的截图`} />
                                 </div>
                             </div>
                         </article>
@@ -61,23 +48,10 @@ export function SnapshotHistory({ items, onDelete }: SnapshotHistoryProps): Reac
             )}
 
             {previewItem !== null && (
-                <div className="image-dialog-backdrop" onMouseDown={(event) => {
-                    if (event.target === event.currentTarget) {
-                        setPreviewId(null);
-                    }
-                }}>
-                    <section className="image-dialog" role="dialog" aria-modal="true" aria-label="历史截图预览">
-                        <div className="section-heading">
-                            <div>
-                                <p className="eyebrow">截图预览</p>
-                                <h2>{formatCapturedAt(previewItem.capturedAt)}</h2>
-                            </div>
-                            <button className="secondary" type="button" onClick={() => setPreviewId(null)}>关闭</button>
-                        </div>
-                        <img src={previewItem.url} alt={`${previewItem.streamId} 的历史截图预览`} />
-                        <a className="primary download-link" href={previewItem.url} download={getDownloadName(previewItem)}>下载原图</a>
-                    </section>
-                </div>
+                <Modal open title={formatCapturedAt(previewItem.capturedAt)} width={1000} onCancel={() => setPreviewId(null)}
+                    footer={<Button type="primary" href={previewItem.url} download={getDownloadName(previewItem)}>下载原图</Button>}>
+                    <img className="snapshot-full" src={previewItem.url} alt={`${previewItem.streamId} 的历史截图预览`} />
+                </Modal>
             )}
         </section>
     );

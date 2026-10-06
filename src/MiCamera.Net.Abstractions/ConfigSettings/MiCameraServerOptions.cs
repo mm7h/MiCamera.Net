@@ -5,6 +5,9 @@
 /// </summary>
 public sealed class MiCameraServerOptions
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ServerInitialization Initialization { get; } = new();
+
     public MilocoOptions Miloco { get; set; } = new();
 
     public StreamingOptions Streaming { get; set; } = new();

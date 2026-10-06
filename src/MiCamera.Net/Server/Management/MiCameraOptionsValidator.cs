@@ -12,18 +12,18 @@ internal static class MiCameraOptionsValidator
         ArgumentNullException.ThrowIfNull(options.Reconnect);
         ArgumentNullException.ThrowIfNull(options.Streams);
 
-        if (!Uri.TryCreate(options.Miloco.BaseUrl, UriKind.Absolute, out Uri? baseUri) ||
-            (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
+        if (options.Initialization.Configured && (!Uri.TryCreate(options.Miloco.BaseUrl, UriKind.Absolute, out Uri? baseUri) ||
+            (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)))
         {
             throw new ArgumentException("Miloco.BaseUrl must be an absolute HTTP or HTTPS URL.", nameof(options));
         }
 
-        if (string.IsNullOrWhiteSpace(options.Miloco.Username))
+        if (options.Initialization.Configured && string.IsNullOrWhiteSpace(options.Miloco.Username))
         {
             throw new ArgumentException("Miloco.Username is required.", nameof(options));
         }
 
-        if (string.IsNullOrWhiteSpace(options.Miloco.Password))
+        if (options.Initialization.Configured && string.IsNullOrWhiteSpace(options.Miloco.Password))
         {
             throw new ArgumentException("Miloco.Password is required.", nameof(options));
         }
@@ -63,7 +63,7 @@ internal static class MiCameraOptionsValidator
             throw new ArgumentException("Reconnect.JitterRatio must be between zero and one.", nameof(options));
         }
 
-        if (options.Streams.Count == 0)
+        if (options.Initialization.Configured && options.Streams.Count == 0)
         {
             throw new ArgumentException("At least one camera stream must be configured.", nameof(options));
         }

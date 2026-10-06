@@ -2,10 +2,12 @@
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Diagnostics;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using Microsoft.Extensions.Logging;
+using MiCamera.Net.RTSP.Services;
 
 namespace MiCamera.Net.RTSP.Server;
 
@@ -36,6 +38,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
         ILogger logger)
     {
         this._client = client;
+        this._client.NoDelay = true;
         this._stream = client.GetStream();
         this._media = media;
         this._options = options;
@@ -44,7 +47,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
 
     public async Task RunAsync(CancellationToken stoppingToken)
     {
-        using StreamReader reader = new(this._stream, Encoding.ASCII, false, 4096, true);
+        using BufferedStream reader = new(this._stream, 4096);
         using CancellationTokenSource idleTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -53,7 +56,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
             RtspRequest? request;
             try
             {
-                request = await ReadRequestAsync(reader, idleTimeout.Token).ConfigureAwait(false);
+                request = await this.ReadRequestAsync(reader, idleTimeout).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested && idleTimeout.IsCancellationRequested)
             {
@@ -168,11 +171,9 @@ internal sealed class RtspClientConnection : IAsyncDisposable
         }
 
         this._streamId = streamId;
-        await this.WriteResponseAsync(request, 200, "OK", new Dictionary<string, string>
-        {
-            ["Session"] = this._sessionId,
-            ["Transport"] = "RTP/AVP/TCP;unicast;interleaved=0-1"
-        }, null, cancellationToken).ConfigureAwait(false);
+        Dictionary<string, string> headers = this.SessionHeaders();
+        headers["Transport"] = "RTP/AVP/TCP;unicast;interleaved=0-1";
+        await this.WriteResponseAsync(request, 200, "OK", headers, null, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task HandlePlayAsync(RtspRequest request, CancellationToken cancellationToken)
@@ -185,20 +186,30 @@ internal sealed class RtspClientConnection : IAsyncDisposable
 
         await this.StopPlaybackAsync().ConfigureAwait(false);
         this._playCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // The shared live clock does not start at zero for a new viewer. Omit optional RTP-Info
+        // until the first unit is known, and finish the PLAY response before any media is written.
+        await this.WriteResponseAsync(request, 200, "OK", this.SessionHeaders(), null, cancellationToken).ConfigureAwait(false);
         this._playTask = this.SendMediaAsync(this._streamId, this._playCancellation.Token);
-
-        Dictionary<string, string> headers = this.SessionHeaders();
-        headers["RTP-Info"] = $"url={request.Uri};seq={this._sequenceNumber};rtptime=0";
-        await this.WriteResponseAsync(request, 200, "OK", headers, null, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task SendMediaAsync(string streamId, CancellationToken cancellationToken)
     {
         try
         {
+            Stopwatch clock = Stopwatch.StartNew();
+            // Hold a bounded relay buffer for RTSP too, rather than passing camera delivery
+            // bursts directly to the client's decode and render queues.
+            VideoPlayoutScheduler playout = new(TimeSpan.FromMilliseconds(1200));
+            long? previousSequence = null;
             await foreach (VideoAccessUnit unit in this._media.SubscribeAsync(streamId, null, cancellationToken)
                 .ConfigureAwait(false))
             {
+                bool framesSkipped = previousSequence is { } previous && unit.SourceSequence > previous + 1;
+                previousSequence = unit.SourceSequence;
+                double wait = playout.WaitSeconds(clock.Elapsed.TotalSeconds, unit.Timestamp90Khz, framesSkipped);
+                if (wait > 0)
+                    await Task.Delay(TimeSpan.FromSeconds(wait), cancellationToken).ConfigureAwait(false);
+                long frameStarted = Stopwatch.GetTimestamp();
                 IReadOnlyList<byte[]> packets = RtpPacketizer.Packetize(unit, this._ssrc, ref this._sequenceNumber, this._options.Rtsp.RtpMtu);
                 foreach (byte[] packet in packets)
                 {
@@ -210,7 +221,9 @@ internal sealed class RtspClientConnection : IAsyncDisposable
                 if (DateTimeOffset.UtcNow - this._lastSenderReport >= TimeSpan.FromSeconds(5))
                 {
                     this._lastSenderReport = DateTimeOffset.UtcNow;
-                    await this.WriteInterleavedAsync(1, this.CreateSenderReport(unit.Timestamp90Khz), cancellationToken).ConfigureAwait(false);
+                    uint reportTimestamp = unchecked(unit.Timestamp90Khz +
+                        (uint)(Stopwatch.GetElapsedTime(frameStarted).TotalSeconds * 90_000));
+                    await this.WriteInterleavedAsync(1, this.CreateSenderReport(reportTimestamp), cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -268,9 +281,10 @@ internal sealed class RtspClientConnection : IAsyncDisposable
         report[3] = 6;
         WriteUInt32(report, 4, this._ssrc);
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        ulong ntp = (ulong)(now.ToUnixTimeMilliseconds() + 2_208_988_800_000L) * 4_294_967_296UL / 1000UL;
-        WriteUInt32(report, 8, (uint)(ntp >> 32));
-        WriteUInt32(report, 12, (uint)ntp);
+        long milliseconds = now.ToUnixTimeMilliseconds();
+        // Split seconds and fraction before scaling: epoch milliseconds times 2^32 overflows ulong.
+        WriteUInt32(report, 8, unchecked((uint)(milliseconds / 1000 + 2_208_988_800L)));
+        WriteUInt32(report, 12, (uint)((ulong)(milliseconds % 1000) * 4_294_967_296UL / 1000));
         WriteUInt32(report, 16, rtpTimestamp);
         WriteUInt32(report, 20, (uint)Interlocked.Read(ref this._packetCount));
         WriteUInt32(report, 24, (uint)Interlocked.Read(ref this._octetCount));
@@ -310,10 +324,17 @@ internal sealed class RtspClientConnection : IAsyncDisposable
 
         response.Append("Content-Length: ").Append(body?.Length ?? 0).Append("\r\n\r\n");
         byte[] head = Encoding.ASCII.GetBytes(response.ToString());
-        await this.WriteAsync(head, cancellationToken).ConfigureAwait(false);
         if (body is not null && body.Length > 0)
         {
-            await this.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+            // A response header and SDP body must be atomic with respect to interleaved RTP.
+            byte[] message = new byte[head.Length + body.Length];
+            head.CopyTo(message, 0);
+            body.CopyTo(message, head.Length);
+            await this.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await this.WriteAsync(head, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -333,7 +354,11 @@ internal sealed class RtspClientConnection : IAsyncDisposable
 
     private bool IsAuthorized(RtspRequest request)
     {
-        if (string.IsNullOrWhiteSpace(this._options.Rtsp.Username) && string.IsNullOrWhiteSpace(this._options.Rtsp.Password))
+        if (this._options.Rtsp.WebManaged && string.IsNullOrEmpty(this._options.Rtsp.DigestHa1))
+        {
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(this._options.Rtsp.Username) && string.IsNullOrWhiteSpace(this._options.Rtsp.Password) && this._options.Rtsp.DigestHa1 is null)
         {
             return true;
         }
@@ -357,7 +382,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
             return false;
         }
 
-        string ha1 = Md5($"{username}:{Realm}:{this._options.Rtsp.Password}");
+        string ha1 = this._options.Rtsp.DigestHa1 ?? Md5($"{username}:{Realm}:{this._options.Rtsp.Password}");
         string ha2 = Md5($"{request.Method}:{uri}");
         string expected;
         if (values.TryGetValue("qop", out string? qop) &&
@@ -454,40 +479,64 @@ internal sealed class RtspClientConnection : IAsyncDisposable
 
     private Dictionary<string, string> SessionHeaders() => new()
     {
-        ["Session"] = this._sessionId
+        ["Session"] = $"{this._sessionId};timeout={(int)Math.Ceiling(this._options.Rtsp.SessionTimeout.TotalSeconds)}"
     };
 
-    private static async Task<RtspRequest?> ReadRequestAsync(StreamReader reader, CancellationToken cancellationToken)
+    private async Task<RtspRequest?> ReadRequestAsync(Stream reader, CancellationTokenSource idleTimeout)
     {
-        string? requestLine = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(requestLine))
+        CancellationToken cancellationToken = idleTimeout.Token;
+        byte[] first = new byte[1];
+        while (await reader.ReadAsync(first, cancellationToken).ConfigureAwait(false) != 0)
         {
-            return null;
-        }
-
-        string[] parts = requestLine.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2)
-        {
-            return null;
-        }
-
-        Dictionary<string, string> headers = new(StringComparer.OrdinalIgnoreCase);
-        while (true)
-        {
-            string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-            if (line is null || line.Length == 0)
+            if (first[0] == (byte)'$')
             {
-                break;
+                // RFC 2326 interleaving is binary: channel, big-endian length, then that many bytes.
+                // RTCP can contain newlines and must never be decoded as an RTSP request.
+                byte[] frameHeader = new byte[3];
+                await reader.ReadExactlyAsync(frameHeader, cancellationToken).ConfigureAwait(false);
+                int length = (frameHeader[1] << 8) | frameHeader[2];
+                byte[] feedback = new byte[length];
+                await reader.ReadExactlyAsync(feedback, cancellationToken).ConfigureAwait(false);
+                idleTimeout.CancelAfter(this._options.Rtsp.SessionTimeout);
+                continue;
             }
 
-            int separator = line.IndexOf(':');
-            if (separator > 0)
+            List<byte> head = [first[0]];
+            while (head.Count < 16_384)
             {
-                headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+                await reader.ReadExactlyAsync(first, cancellationToken).ConfigureAwait(false);
+                head.Add(first[0]);
+                int count = head.Count;
+                if (count >= 4 && head[count - 4] == 13 && head[count - 3] == 10 &&
+                    head[count - 2] == 13 && head[count - 1] == 10)
+                    break;
             }
-        }
+            if (head.Count >= 16_384)
+                throw new InvalidDataException("RTSP request headers are too large.");
 
-        return new RtspRequest(parts[0].ToUpperInvariant(), parts[1], headers);
+            string[] lines = Encoding.ASCII.GetString(head.ToArray()).Split("\r\n");
+            string[] parts = lines[0].Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3 || parts[2] != "RTSP/1.0")
+                throw new InvalidDataException("Invalid RTSP request line.");
+
+            Dictionary<string, string> headers = new(StringComparer.OrdinalIgnoreCase);
+            foreach (string line in lines.Skip(1))
+            {
+                int separator = line.IndexOf(':');
+                if (separator > 0)
+                    headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            }
+
+            if (headers.TryGetValue("Content-Length", out string? value))
+            {
+                if (!int.TryParse(value, out int length) || length is < 0 or > 65_536)
+                    throw new InvalidDataException("Invalid RTSP request body length.");
+                byte[] body = new byte[length];
+                await reader.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
+            }
+            return new RtspRequest(parts[0].ToUpperInvariant(), parts[1], headers);
+        }
+        return null;
     }
 
     private static Dictionary<string, string> ParseDigest(string source)

@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Media.Services;
@@ -45,7 +45,22 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
     private long _lastKeyFrameTicks;
     private long _framesSinceKeyFrame;
     private volatile bool _keyFrameRequested;
+    private bool _decodingInterFrames;
+    private uint? _previousTimestamp;
+    private long _timestamp90Khz;
+    /// <summary>
+    /// Maps the presentation timestamp of every submitted packet to the source access unit it came
+    /// from. Frame-level decoder threads hold several frames back, so the frame that leaves the
+    /// decoder is not the packet that was just submitted; its PTS is the only reliable link back to
+    /// the source sequence and RTP timestamp.
+    /// </summary>
+    private readonly Dictionary<long, SourceOrigin> _origins = [];
+    private readonly Queue<long> _originOrder = new();
     private bool _disposed;
+
+    private readonly record struct SourceOrigin(long Sequence, uint Timestamp90Khz, uint Duration90Khz);
+
+    private static readonly ProcessResult Empty = new(null, []);
 
     private FFmpegFrameProcessor(
         string streamId,
@@ -75,7 +90,10 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             EnsureAllocated(this._decoder, "decoder context");
             EnsureAllocated(this._decodedFrame, "decoder frame");
             EnsureAllocated(this._decodePacket, "decoder packet");
-            this._decoder->thread_count = 1;
+            // Slice threads alone leave a 4K HEVC decoder at roughly half the throughput of frame
+            // threads on this class of CPU, so both modes are enabled and every core participates.
+            this._decoder->thread_count = Math.Max(1, Environment.ProcessorCount);
+            this._decoder->thread_type = ffmpeg.FF_THREAD_FRAME | ffmpeg.FF_THREAD_SLICE;
             ThrowIfError(ffmpeg.avcodec_open2(this._decoder, codec, null), "open decoder");
         }
         catch
@@ -117,35 +135,75 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         }
     }
 
-    public ProcessResult Process(VideoAccessUnit unit, bool transcodeToH264)
+    public ProcessResult Process(VideoAccessUnit unit, bool transcodeToH264, bool snapshotWanted)
     {
         ObjectDisposedException.ThrowIf(this._disposed, this);
         ArgumentOutOfRangeException.ThrowIfZero(unit.AnnexB.Length);
 
+        // RTP wraps after about 13 hours; native encoder PTS must remain increasing. Skipped units
+        // still advance the clock so a decoding gap keeps its real source time span.
+        this._timestamp90Khz = this._previousTimestamp is { } previous
+            ? this._timestamp90Khz + unchecked(unit.Timestamp90Khz - previous)
+            : unit.Timestamp90Khz;
+        this._previousTimestamp = unit.Timestamp90Khz;
+
+        // Resume full decoding at a key frame so references discarded while idle cannot corrupt the
+        // first frames of a new preview.
+        bool transcode = transcodeToH264 && (this._decodingInterFrames || unit.IsKeyFrame);
+        bool snapshot = snapshotWanted && unit.IsKeyFrame;
+
+        if (this._decodingInterFrames && !transcode)
+        {
+            // The last viewer left. Drop the frames the decoder still holds so a later viewer never
+            // receives the stale tail of the previous session.
+            this.FlushDecoder();
+        }
+
+        this._decodingInterFrames = transcode;
+
+        // An inter frame cannot be decoded without its references, and a snapshot only needs key
+        // frames, so submitting it would only burn CPU that the live encoders need.
+        if (!transcode && !snapshot)
+        {
+            return Empty;
+        }
+
+        long packetTimestamp = this._timestamp90Khz;
         ffmpeg.av_packet_unref(this._decodePacket);
         ThrowIfError(ffmpeg.av_new_packet(this._decodePacket, unit.AnnexB.Length), "allocate decode packet");
-        Marshal.Copy(unit.AnnexB.ToArray(), 0, (IntPtr)this._decodePacket->data, unit.AnnexB.Length);
-        this._decodePacket->pts = unit.Timestamp90Khz;
-        this._decodePacket->dts = unit.Timestamp90Khz;
+        unit.AnnexB.Span.CopyTo(new Span<byte>(this._decodePacket->data, unit.AnnexB.Length));
+        this._decodePacket->pts = packetTimestamp;
+        this._decodePacket->dts = packetTimestamp;
+        this.QueueOrigin(packetTimestamp, unit);
         ThrowIfError(ffmpeg.avcodec_send_packet(this._decoder, this._decodePacket), "decode video packet");
 
-        VideoSnapshot? snapshot = null;
+        VideoSnapshot? jpeg = null;
         List<VideoAccessUnit> transcoded = [];
+
+        // Frame threads delay output until more packets arrive. An idle screenshot has no
+        // following packets to unlock it, so drain this independent key frame immediately.
+        if (!transcode)
+            ThrowIfError(ffmpeg.avcodec_send_packet(this._decoder, null), "drain snapshot decoder");
 
         while (ffmpeg.avcodec_receive_frame(this._decoder, this._decodedFrame) == 0)
         {
-            if (unit.IsKeyFrame)
+            SourceOrigin origin = this.TakeOrigin(this._decodedFrame->pts, unit);
+            bool frameIsKeyFrame = (this._decodedFrame->flags & KeyFrameFlag) != 0 ||
+                this._decodedFrame->pict_type == AVPictureType.AV_PICTURE_TYPE_I;
+
+            if (snapshotWanted && jpeg is null && frameIsKeyFrame)
             {
-                snapshot = this.EncodeJpeg(unit);
+                jpeg = this.EncodeJpeg(origin);
             }
 
-            if (transcodeToH264)
+            if (transcode)
             {
-                transcoded.AddRange(this.EncodeH264(unit));
+                transcoded.AddRange(this.EncodeH264(origin));
             }
         }
 
-        return new ProcessResult(snapshot, transcoded);
+        if (!transcode) this.FlushDecoder();
+        return new ProcessResult(jpeg, transcoded);
     }
 
     /// <summary>
@@ -196,10 +254,10 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         FreeCodecContext(ref this._decoder);
     }
 
-    private VideoSnapshot? EncodeJpeg(VideoAccessUnit unit)
+    private VideoSnapshot? EncodeJpeg(SourceOrigin origin)
     {
         this.EnsureEncoders();
-        this.CopyDecodedFrameTo(this._jpegFrame, this._jpegConverter, unit.Timestamp90Khz);
+        this.CopyDecodedFrameTo(this._jpegFrame, this._jpegConverter, this._decodedFrame->pts);
 
         ffmpeg.av_packet_unref(this._jpegPacket);
         ThrowIfError(ffmpeg.avcodec_send_frame(this._jpegEncoder, this._jpegFrame), "encode JPEG frame");
@@ -214,17 +272,28 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             this._streamId,
             jpeg,
             DateTimeOffset.UtcNow,
-            unit.SourceSequence,
+            origin.Sequence,
             this._width,
             this._height,
             this._sourceCodec);
     }
 
-    private IReadOnlyList<VideoAccessUnit> EncodeH264(VideoAccessUnit source)
+    private IReadOnlyList<VideoAccessUnit> EncodeH264(SourceOrigin origin)
     {
         this.EnsureEncoders();
         this.EnsureH264Encoder();
-        this.CopyDecodedFrameTo(this._h264Frame, this._h264Converter, source.Timestamp90Khz);
+        if (this._decodedFrame->format == (int)AVPixelFormat.AV_PIX_FMT_YUV420P &&
+            this._width == this._h264Width && this._height == this._h264Height)
+        {
+            // Native-resolution HEVC already has the encoder's pixel layout. Keep a reference
+            // instead of copying every 4K frame through swscale; only our frame metadata changes.
+            ffmpeg.av_frame_unref(this._h264Frame);
+            ThrowIfError(ffmpeg.av_frame_ref(this._h264Frame, this._decodedFrame), "reference H.264 input frame");
+        }
+        else
+        {
+            this.CopyDecodedFrameTo(this._h264Frame, this._h264Converter, this._decodedFrame->pts);
+        }
         this.ApplyKeyFrameRequest();
 
         ffmpeg.av_packet_unref(this._h264Packet);
@@ -235,20 +304,60 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         {
             byte[] annexB = new byte[this._h264Packet->size];
             Marshal.Copy((IntPtr)this._h264Packet->data, annexB, 0, annexB.Length);
-            bool isKeyFrame = AnnexBBitstream.IsKeyFrame(VideoCodec.H264, annexB);
-            bool hasParameters = AnnexBBitstream.ContainsCodecParameters(VideoCodec.H264, annexB);
             result.Add(new VideoAccessUnit(
                 this._streamId,
                 VideoCodec.H264,
                 annexB,
-                source.SourceSequence,
-                source.Timestamp90Khz,
-                this._frameDuration,
-                isKeyFrame,
-                hasParameters));
+                origin.Sequence,
+                origin.Timestamp90Khz,
+                origin.Duration90Khz,
+                AnnexBBitstream.IsKeyFrame(VideoCodec.H264, annexB),
+                AnnexBBitstream.ContainsCodecParameters(VideoCodec.H264, annexB)));
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Remembers which source access unit a submitted packet belongs to. Frame-level decoder
+    /// threads return frames several packets later, so the mapping cannot be assumed away.
+    /// </summary>
+    private void QueueOrigin(long packetTimestamp, VideoAccessUnit unit)
+    {
+        this._origins[packetTimestamp] = new SourceOrigin(unit.SourceSequence, unit.Timestamp90Khz, unit.Duration90Khz);
+        this._originOrder.Enqueue(packetTimestamp);
+
+        while (this._originOrder.Count > 256)
+        {
+            this._origins.Remove(this._originOrder.Dequeue());
+        }
+    }
+
+    /// <summary>
+    /// Resolves the source access unit behind a decoded frame and drops every older mapping, which
+    /// keeps the queue bounded by the decoder's frame-thread depth.
+    /// </summary>
+    private SourceOrigin TakeOrigin(long frameTimestamp, VideoAccessUnit fallback)
+    {
+        if (!this._origins.Remove(frameTimestamp, out SourceOrigin origin))
+        {
+            origin = new SourceOrigin(fallback.SourceSequence, fallback.Timestamp90Khz, fallback.Duration90Khz);
+        }
+
+        while (this._originOrder.TryPeek(out long queued) && queued <= frameTimestamp)
+        {
+            this._originOrder.Dequeue();
+            this._origins.Remove(queued);
+        }
+
+        return origin;
+    }
+
+    private void FlushDecoder()
+    {
+        ffmpeg.avcodec_flush_buffers(this._decoder);
+        this._origins.Clear();
+        this._originOrder.Clear();
     }
 
     /// <summary>
@@ -315,13 +424,17 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this._height = this._decodedFrame->height;
         (this._h264Width, this._h264Height) = GetH264OutputSize(this._width, this._height, this._options);
         this._jpegFrame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, "JPEG conversion frame");
-        this._jpegConverter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, "JPEG pixel converter");
+        this._jpegConverter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, ffmpeg.SWS_BILINEAR, "JPEG pixel converter");
 
         AVCodec* jpegCodec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_MJPEG);
         EnsureAllocated(jpegCodec, "MJPEG encoder");
         this._jpegEncoder = ffmpeg.avcodec_alloc_context3(jpegCodec);
         EnsureAllocated(this._jpegEncoder, "MJPEG encoder context");
         this.ConfigureVideoEncoder(this._jpegEncoder, AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height);
+        // MJPEG supports slice threads: parallelize a 4K snapshot without frame-thread
+        // buffering, which would delay the first snapshot until another key frame.
+        this._jpegEncoder->thread_count = Math.Min(2, Environment.ProcessorCount);
+        this._jpegEncoder->thread_type = ffmpeg.FF_THREAD_SLICE;
         this._jpegEncoder->qmin = Math.Clamp(31 - (this._jpegQuality * 30 / 100), 1, 31);
         this._jpegEncoder->qmax = this._jpegEncoder->qmin;
         ThrowIfError(ffmpeg.avcodec_open2(this._jpegEncoder, jpegCodec, null), "open MJPEG encoder");
@@ -346,9 +459,14 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this._h264Encoder = ffmpeg.avcodec_alloc_context3(codec);
         EnsureAllocated(this._h264Encoder, "H.264 encoder context");
         if (this._h264Frame is null) this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, "H.264 conversion frame");
-        if (this._h264Converter is null) this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, "H.264 pixel converter");
+        if (this._h264Converter is null) this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, ffmpeg.SWS_FAST_BILINEAR, "H.264 pixel converter");
         this.ConfigureVideoEncoder(this._h264Encoder, AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height);
+        this._h264Encoder->thread_count = Math.Max(1, Environment.ProcessorCount);
         this._h264Encoder->bit_rate = this._options.H264Bitrate;
+        // Bound key-frame bursts to a quarter second of bitrate so a new viewer can
+        // receive a complete IDR without overflowing UDP/reassembly buffers.
+        this._h264Encoder->rc_max_rate = this._options.H264Bitrate;
+        this._h264Encoder->rc_buffer_size = Math.Max(1, this._options.H264Bitrate / 4);
         this._h264Encoder->gop_size = Math.Max(1, (int)Math.Round(90_000d / this._frameDuration * this._options.KeyFrameInterval.TotalSeconds));
         this._h264Encoder->max_b_frames = 0;
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "preset", this._options.H264Preset, 0);
@@ -356,6 +474,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "profile", "baseline", 0);
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "annexb", "1", 0);
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "repeat-headers", "1", 0);
+        _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "forced-idr", "1", 0);
         ThrowIfError(ffmpeg.avcodec_open2(this._h264Encoder, codec, null), "open H.264 encoder");
         this._h264Packet = ffmpeg.av_packet_alloc();
         EnsureAllocated(this._h264Packet, "H.264 packet");
@@ -366,8 +485,9 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         context->width = width;
         context->height = height;
         context->pix_fmt = pixelFormat;
-        context->time_base = new AVRational { num = (int)this._frameDuration, den = 90_000 };
+        context->time_base = new AVRational { num = 1, den = 90_000 };
         context->framerate = new AVRational { num = 90_000, den = (int)this._frameDuration };
+        context->thread_count = 1;
     }
 
     private AVFrame* CreateConversionFrame(AVPixelFormat pixelFormat, int width, int height, string name)
@@ -381,7 +501,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         return frame;
     }
 
-    private SwsContext* CreateConverter(AVPixelFormat destinationFormat, int width, int height, string name)
+    private SwsContext* CreateConverter(AVPixelFormat destinationFormat, int width, int height, int flags, string name)
     {
         SwsContext* converter = ffmpeg.sws_getCachedContext(
             null,
@@ -391,7 +511,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             width,
             height,
             destinationFormat,
-            width == this._width && height == this._height ? ffmpeg.SWS_BILINEAR : ffmpeg.SWS_BICUBIC,
+            flags,
             null,
             null,
             null);
@@ -399,7 +519,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         return converter;
     }
 
-    private void CopyDecodedFrameTo(AVFrame* target, SwsContext* converter, uint timestamp90Khz)
+    private void CopyDecodedFrameTo(AVFrame* target, SwsContext* converter, long timestamp90Khz)
     {
         ThrowIfError(ffmpeg.av_frame_make_writable(target), "make conversion frame writable");
         _ = ffmpeg.sws_scale(

@@ -7,7 +7,7 @@ Before use or redistribution, review the licenses of the exact downloaded packag
   https://github.com/XiaoMi/xiaomi-miloco/blob/main/LICENSE.md
 - The miiot/miloco image is a community image, not an official Xiaomi image. Its upstream source version and embedded notices must be checked before redistribution.
   https://github.com/miiot/micam/blob/main/Dockerfile.miloco
-- SIPSorcery 10.0.16: BSD 3-Clause with additional geographic/use restrictions. Its NuGet package contains the full applicable LICENSE.md.
+- SIPSorcery 10.0.17: BSD 3-Clause with additional geographic/use restrictions. Its NuGet package contains the full applicable LICENSE.md.
   https://github.com/sipsorcery-org/sipsorcery/blob/4ca86773993a875706d8a7a4c1e0108e3a885ebf/LICENSE.md
 - FFmpeg packages with libx264/libx265 include GPL-covered components. Local use is distinct from redistribution. Preserve notices and satisfy applicable source/relinking obligations before distributing images.
   https://ffmpeg.org/legal.html

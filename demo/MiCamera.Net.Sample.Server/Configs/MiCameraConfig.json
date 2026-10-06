@@ -1,8 +1,5 @@
 {
   "Miloco": {
-    "BaseUrl": "https://192.168.3.104:8000",
-    "Username": "admin", //Miloco 的本地服务账号，默认都为 admin
-    "Password": "", //Miloco 本地接口要求的小写 MD5 密码值；请在未提交的配置文件中填写
     "AllowInvalidServerCertificate": true, //是否跳过 Miloco HTTPS 证书校验
     "RequestTimeout": 15
   },
@@ -21,7 +18,6 @@
   },
   "MediaServer": {
     "ListenAddress": "http://localhost:5080", //HTTP API 监听地址；非回环监听必须配置 BearerToken
-    "BearerToken": "", // HTTP API 的自定义token
     "AllowedOrigins": [ "http://localhost:5081" ],
     "FFmpeg": {
       "Path": "./ffmpeg", //FFmpeg 7.1路径
@@ -34,36 +30,15 @@
       "ListenAddress": "127.0.0.1",
       "Port": 8554,
       "PathPrefix": "/live", // 流地址的公共前缀，与 StreamId 拼成 rtsp://{ip}:{port}/live/living-room
-      "Username": "", // RTSP Digest 认证用户名
-      "Password": "", // RTSP Digest 认证密码，需要与用户名一起配置
       "RtpMtu": 1200, // 单个 RTP 包的大小上限，单位为字节。大视频数据会拆成多个 RTP 包。它不是分辨率或码率
-      "SessionTimeout": 60, // RTSP 控制通道的空闲超时。客户端长时间不发送请求或保活消息，会被断开
-      "Streams": [
-        {
-          "StreamId": "living-room", //本项目对外暴露的流名称，如 living-room；会出现在 RTSP URL 中，必须唯一
-          "CameraDeviceId": "", //米家摄像头的 DID；这是从 Miloco 的设备/摄像头列表得到的设备标识，不是摄像头名称
-          "Channel": 0, //镜头通道，普通单摄通常为 0；双摄等设备可能有 1。同一 CameraDeviceId + Channel 不能配置两次
-          "Codec": "H265", //Miloco 输出的实际编码：H264 或 H265。示例为 H264；配置错误会导致解码/转码失败
-          "NominalFrameRate": 25 //码流未携带有效时间信息时采用的回退帧率，通常填 25；允许 1–120
-        },
-        {
-          "StreamId": "bed-room",
-          "CameraDeviceId": "",
-          "Channel": 0,
-          "Codec": "H265",
-          "NominalFrameRate": 25
-        }
-      ]
+      "SessionTimeout": 60 // RTSP 控制通道的空闲超时。客户端长时间不发送请求或保活消息，会被断开
     },
     "WebRtc": {
-      "BindAddress": null,
-      "PortRangeStart": null, // 固定端口范围时，两端必须同时配置，起点必须为偶数
-      "PortRangeEnd": null,
       "Enabled": true,
-      "IceServers": [],
       "IceGatheringTimeout": 5,
       "PendingSessionTimeout": 30,
       "DisconnectedGracePeriod": 15,
+      "PlayoutDelay": 1.2, // 发送时钟前预留的秒数：吸收中继的成串交付，越大越连续、延迟越高
       "TranscoderIdleTimeout": 10,
       "MaxPeersPerStream": 4
     },

@@ -41,6 +41,7 @@ internal static class MiCameraRtspOptionsValidator
             throw new ArgumentException("Rtsp.PathPrefix must start with '/'.", nameof(options));
         }
 
+        bool webSetup = options.Rtsp.WebManaged;
         if (string.IsNullOrWhiteSpace(options.Rtsp.Username) != string.IsNullOrWhiteSpace(options.Rtsp.Password))
         {
             throw new ArgumentException("Rtsp.Username and Rtsp.Password must be configured together.", nameof(options));
@@ -55,7 +56,9 @@ internal static class MiCameraRtspOptionsValidator
         if (options.WebRtc.MaxPeersPerStream < 1 || options.Snapshot.JpegQuality is < 1 or > 100 ||
             options.Media.H264Bitrate <= 0 || options.WebRtc.IceGatheringTimeout <= TimeSpan.Zero ||
             options.WebRtc.PendingSessionTimeout <= TimeSpan.Zero || options.WebRtc.DisconnectedGracePeriod <= TimeSpan.Zero ||
-            options.WebRtc.TranscoderIdleTimeout < TimeSpan.Zero || options.Media.KeyFrameInterval <= TimeSpan.Zero)
+            options.WebRtc.PlayoutDelay < TimeSpan.Zero ||
+            options.WebRtc.TranscoderIdleTimeout < TimeSpan.Zero || options.Media.KeyFrameInterval <= TimeSpan.Zero ||
+            options.Snapshot.Interval < TimeSpan.Zero)
         {
             throw new ArgumentException("One or more RTSP service timing or media options are invalid.", nameof(options));
         }
@@ -72,7 +75,7 @@ internal static class MiCameraRtspOptionsValidator
 
         bool httpLoopback = string.Equals(httpUri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
             (IPAddress.TryParse(httpUri.Host, out IPAddress? httpAddress) && IPAddress.IsLoopback(httpAddress));
-        if ((!IPAddress.IsLoopback(rtspAddress) && (string.IsNullOrWhiteSpace(options.Rtsp.Username) || string.IsNullOrWhiteSpace(options.Rtsp.Password))) ||
+        if ((!webSetup && !IPAddress.IsLoopback(rtspAddress) && (string.IsNullOrWhiteSpace(options.Rtsp.Username) || string.IsNullOrWhiteSpace(options.Rtsp.Password))) ||
             (!httpLoopback && string.IsNullOrWhiteSpace(options.Http.BearerToken)))
         {
             throw new ArgumentException(

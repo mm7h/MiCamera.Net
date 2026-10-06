@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.OpenApi.Models;
 
 namespace MiCamera.Net.RTSP.Extensions;
 
@@ -44,11 +45,28 @@ public static class MiCameraRtspBuilderExtensions
             services.AddMiCameraMedia();
             services.AddSingleton<CameraApiService>();
             services.AddSingleton<WebRtcSessionService>();
-            services.AddHostedService<RtspServerHostedService>();
+            services.AddSingleton<RtspServerHostedService>();
+            services.AddHostedService(provider => provider.GetRequiredService<RtspServerHostedService>());
             services.AddHostedService<WebRtcSessionCleanupService>();
             services.AddSingleton<BearerTokenAuthorizationFilter>();
             services.AddControllers(mvc => mvc.Filters.AddService<BearerTokenAuthorizationFilter>())
-                .AddApplicationPart(typeof(CamerasController).Assembly);
+                .AddApplicationPart(typeof(CamerasController).Assembly)
+                .AddJsonOptions(json => json.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
+            services.AddEndpointsApiExplorer();
+            services.AddSwaggerGen(swagger =>
+            {
+                swagger.SwaggerDoc("v1", new OpenApiInfo { Title = "MiCamera.Net API", Version = "v1" });
+                swagger.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+                {
+                    Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "Token",
+                    Description = "填写 HTTP API Bearer Token；与 Miloco PIN、RTSP 密码不同。"
+                });
+                swagger.AddSecurityRequirement(new OpenApiSecurityRequirement
+                {
+                    [new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }] = []
+                });
+                swagger.UseInlineDefinitionsForEnums();
+            });
             services.AddCors(cors => cors.AddPolicy(CorsPolicyName, policy =>
             {
                 if (options.Http.AllowedOrigins.Count > 0)
@@ -65,6 +83,8 @@ public static class MiCameraRtspBuilderExtensions
             webBuilder.UseUrls(options.Http.ListenUrl);
             webBuilder.Configure(app =>
             {
+                app.UseSwagger();
+                app.UseSwaggerUI(swagger => swagger.SwaggerEndpoint("v1/swagger.json", "MiCamera.Net v1"));
                 app.UseRouting();
                 if (options.Http.AllowedOrigins.Count > 0)
                 {

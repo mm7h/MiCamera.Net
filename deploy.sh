@@ -9,6 +9,8 @@ STATE_DIR="$SCRIPT_DIR/.deploy"
 BRIDGE_IMAGE="micamera-net-bridge:local"
 LAN_IP=""
 NON_INTERACTIVE=false
+PREVIOUS_IMAGES=()
+PACKAGE_MODE=false
 
 say() { printf '%s\n' "$*"; }
 die() { say "错误：$*" >&2; exit 1; }
@@ -20,7 +22,41 @@ prompt() {
     REPLY="${answer:-$default}"
 }
 
-compose() { docker compose --project-directory "$SCRIPT_DIR" --env-file "$STATE_DIR/deployment.env" -f "$SCRIPT_DIR/docker-compose.yml" "$@"; }
+compose() {
+    local operation="$1"; shift
+    local flags=()
+    if [[ "$PACKAGE_MODE" == true && "$operation" == up ]]; then flags+=(--no-build); fi
+    docker compose --project-directory "$SCRIPT_DIR" --env-file "$STATE_DIR/deployment.env" -f "$SCRIPT_DIR/docker-compose.yml" "$operation" "${flags[@]}" "$@"
+}
+
+load_package_metadata() {
+    [[ -f "$SCRIPT_DIR/deployment/package.env" ]] || return 0
+    PACKAGE_MODE=true
+    local key value architecture
+    while IFS='=' read -r key value; do
+        case "$key" in
+            PACKAGE_ARCH) PACKAGE_ARCH="$value" ;;
+            MICAMERA_BRIDGE_IMAGE) export MICAMERA_BRIDGE_IMAGE="$value"; BRIDGE_IMAGE="$value" ;;
+            MICAMERA_WEB_IMAGE) export MICAMERA_WEB_IMAGE="$value" ;;
+            BRIDGE_ID) BRIDGE_ID="$value" ;;
+            WEB_ID) WEB_ID="$value" ;;
+            PACKAGE_VERSION) ;;
+            *) die '体验包元数据包含未知字段。' ;;
+        esac
+    done < "$SCRIPT_DIR/deployment/package.env"
+    case "$(uname -m)" in x86_64) architecture=amd64 ;; aarch64|arm64) architecture=arm64 ;; esac
+    [[ "${PACKAGE_ARCH:-}" == "$architecture" ]] || die '体验包架构与当前主机不匹配。'
+    [[ "$BRIDGE_IMAGE" =~ ^micamera-net-bridge:[A-Za-z0-9._-]+$ && "${MICAMERA_WEB_IMAGE:-}" =~ ^micamera-net-web:[A-Za-z0-9._-]+$ ]] || die '体验包镜像名称无效。'
+    [[ "${BRIDGE_ID:-}" =~ ^sha256:[0-9a-f]{64}$ && "${WEB_ID:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || die '体验包镜像标识无效。'
+}
+
+prepare_application_state() {
+    [[ ! -L "$STATE_DIR/micamera-state" ]] || die '应用状态目录不能是符号链接。'
+    mkdir -p "$STATE_DIR/micamera-state"
+    docker run --rm --network none --user 0:0 --entrypoint python3 \
+        --mount "type=bind,source=$STATE_DIR/micamera-state,target=/run/micamera-state" "$BRIDGE_IMAGE" \
+        -c 'import os; os.chown("/run/micamera-state",10001,10001); os.chmod("/run/micamera-state",0o700)'
+}
 
 helper() {
     docker run --rm -i --network host --user "$(id -u):$(id -g)" \
@@ -35,7 +71,7 @@ check_environment() {
     [[ "$(uname -s)" == Linux ]] || die "此部署脚本仅支持 Linux Docker Engine。"
     [[ "${BASH_VERSINFO[0]}" -ge 4 ]] || die "需要 Bash 4 或更新版本。"
     local tool version major minor endpoint security engine_os
-    for tool in docker ip ss awk flock id mkdir chmod; do
+    for tool in docker ip ss awk flock id mkdir chmod sha256sum; do
         command -v "$tool" >/dev/null || die "缺少系统工具 $tool。请安装 Docker Compose v2、iproute2、awk、coreutils 和 util-linux。"
     done
     docker info >/dev/null 2>&1 || die "Docker Engine 不可用，或当前用户无访问权限。"
@@ -123,8 +159,64 @@ license_notice() {
 }
 
 build_images() {
+    local container
     say '[2/5] 构建桥接服务与前端（首次需要下载镜像和依赖）'
-    compose build --pull bridge web
+    mapfile -t PREVIOUS_IMAGES < <(
+        docker image ls --quiet micamera-net-bridge
+        docker image ls --quiet micamera-net-web
+        docker image ls --quiet --filter label=com.docker.compose.project=micamera-net
+        # A previous build may have moved the tag while the old container still uses
+        # its now-untagged image. Record that image before Compose replaces the container.
+        while IFS= read -r container; do
+            [[ -z "$container" ]] || docker inspect --format '{{.Image}}' "$container"
+        done < <(docker ps -aq --filter label=com.docker.compose.project=micamera-net)
+    )
+    if [[ "$PACKAGE_MODE" == true ]]; then
+        say '校验并导入预构建镜像，无需源码编译。'
+        (cd "$SCRIPT_DIR" && sha256sum -c SHA256SUMS) || die '体验包校验失败。'
+        if [[ "$(docker image inspect --format '{{.Id}}' "$BRIDGE_IMAGE" 2>/dev/null || true)" != "$BRIDGE_ID" || \
+              "$(docker image inspect --format '{{.Id}}' "$MICAMERA_WEB_IMAGE" 2>/dev/null || true)" != "$WEB_ID" ]]; then
+            docker load -i "$SCRIPT_DIR/images.tar"
+        fi
+        [[ "$(docker image inspect --format '{{.Id}}' "$BRIDGE_IMAGE")" == "$BRIDGE_ID" && \
+           "$(docker image inspect --format '{{.Id}}' "$MICAMERA_WEB_IMAGE")" == "$WEB_ID" ]] || die '导入的镜像与体验包不匹配。'
+        [[ "$(docker image inspect --format '{{.Architecture}}' "$BRIDGE_IMAGE")" == "$PACKAGE_ARCH" && \
+           "$(docker image inspect --format '{{.Architecture}}' "$MICAMERA_WEB_IMAGE")" == "$PACKAGE_ARCH" ]] || die '镜像架构不匹配。'
+    else
+        compose build --pull bridge web
+    fi
+}
+
+cleanup_previous_deployment() {
+    local container image full_id tag referenced
+    local used_images=() tags=()
+    while IFS= read -r container; do
+        [[ -n "$container" ]] || continue
+        if [[ "$(docker inspect --format '{{.State.Status}}' "$container")" != running ]]; then
+            docker rm "$container"
+        fi
+    done < <(docker ps -aq --filter label=com.docker.compose.project=micamera-net)
+    while IFS= read -r container; do
+        [[ -n "$container" ]] || continue
+        used_images+=("$(docker inspect --format '{{.Image}}' "$container")")
+    done < <(docker ps -aq)
+    for image in "${PREVIOUS_IMAGES[@]}"; do
+        full_id="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null)" || continue
+        referenced=false
+        for tag in "${used_images[@]}"; do
+            [[ "$tag" != "$full_id" ]] || referenced=true
+        done
+        [[ "$referenced" == false ]] || continue
+        mapfile -t tags < <(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image")
+        for tag in "${tags[@]}"; do
+            case "$tag" in ''|micamera-net-bridge:*|micamera-net-web:*) ;; *) referenced=true ;; esac
+        done
+        [[ "$referenced" == false ]] || continue
+        for tag in "${tags[@]}"; do
+            [[ -z "$tag" ]] || docker image rm "$tag"
+        done
+        if docker image inspect "$image" >/dev/null 2>&1; then docker image rm "$image"; fi
+    done
 }
 
 wait_probe() {
@@ -137,108 +229,32 @@ wait_probe() {
     helper "$command" || return 1
 }
 
-authorize() {
-    say '[3/5] Miloco 本地登录与小米账号绑定'
-    say "请在电脑浏览器打开 https://$LAN_IP:8000，设置本地密码并完成小米账号绑定。"
-    say '该页面使用自签名证书。这里只处理你本机的 Miloco，不收集小米账号密码。'
-    if helper authorize 2>/dev/null; then return; fi
-    interactive || die '缺少有效的 Miloco 密码或小米授权。请通过交互终端重新运行。'
-    local password action
-    while true; do
-        prompt '完成网页配置后按 Enter；输入 q 可稍后继续：'
-        [[ "$REPLY" != q ]] || die '已保留当前部署，可稍后重新运行继续。'
-        read -r -s -p '请输入 Miloco 本地密码（不是小米账号密码）：' password || die '密码输入已中断。'
-        printf '\n'
-        [[ -n "$password" ]] || { say '密码不能为空。'; continue; }
-        printf '%s' "$password" | helper set-password
-        unset password
-        if helper authorize; then return; fi
-        say '  1. 重新检查网页授权（复用已输入的本地密码）'
-        say '  2. 重新输入 Miloco 本地密码'
-        say '  3. 退出并稍后继续'
-        while true; do
-            prompt '请选择 [1]：' '1'; action="$REPLY"
-            case "$action" in
-                1) if helper authorize; then return; fi ;;
-                2) break ;;
-                3) die '已保留部署配置，可稍后继续。' ;;
-                *) say '选项不正确。' ;;
-            esac
-        done
-    done
-}
-
 validate_config_file() {
     local config_file="$1"
     docker run --rm --network none \
         --mount "type=bind,source=$config_file,target=/run/configs/MiCameraConfig.json,readonly" \
-        --mount "type=bind,source=$STATE_DIR/secrets/miloco_password_md5,target=/run/secrets/miloco_password_md5,readonly" \
         --mount "type=bind,source=$STATE_DIR/secrets/rtsp_api_token,target=/run/secrets/rtsp_api_token,readonly" \
-        --mount "type=bind,source=$STATE_DIR/secrets/rtsp_password,target=/run/secrets/rtsp_password,readonly" \
         --mount "type=bind,source=$STATE_DIR/miloco/cert/cert.pem,target=/run/configs/miloco-server-cert.pem,readonly" \
         "$BRIDGE_IMAGE" --validate-config
-}
-
-validate_pending() {
-    validate_config_file "$STATE_DIR/MiCameraConfig.pending.json"
 }
 
 validate_current_config() {
     validate_config_file "$STATE_DIR/MiCameraConfig.json"
 }
 
-add_camera() {
-    interactive || die '添加摄像头需要交互终端。'
-    say '[4/5] 配置摄像头'
-    local did stream channel codec choice count
-    count="$(helper stream-count)"
-    if helper cameras; then
-        while true; do
-            prompt '请选择摄像头 [0=手动]：' '0'; choice="$REPLY"
-            if [[ "$choice" == 0 ]]; then prompt '摄像头 DID：'; did="$REPLY"; break; fi
-            if [[ "$choice" =~ ^[1-9][0-9]{0,2}$ ]] && did="$(helper select-camera "$choice")"; then break; fi
-            say '选项不正确，请重新选择。'
-        done
-    else
-        say '无法获取摄像头列表。可以在 Miloco 页面 F12 网络请求中核对 DID。'
-        prompt '摄像头 DID：'; did="$REPLY"
-    fi
-    while [[ ! "$did" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; do
-        say 'DID 格式不正确，请重新输入。'
-        prompt '摄像头 DID：'; did="$REPLY"
-    done
-    while true; do
-        prompt "流名称 [camera-$((count+1))]：" "camera-$((count+1))"; stream="$REPLY"
-        prompt '通道 [0]：' '0'; channel="$REPLY"
-        say '  1. H.265（默认）  2. H.264'
-        prompt '视频编码 [1]：' '1'; choice="$REPLY"
-        case "$choice" in 1) codec=H265 ;; 2) codec=H264 ;; *) say '编码选项不正确。'; continue ;; esac
-        if helper stage-stream "$did" "$stream" "$channel" "$codec" && validate_pending; then break; fi
-        say '配置未通过校验，原配置未修改，请重新填写。'
-    done
-    helper commit-stream
-    say '配置已保存。启动/重建桥接容器会中断现有播放连接。'
-    if compose up -d --no-deps --force-recreate bridge && wait_probe ready 120; then return; fi
-    if (( count > 0 )); then
-        say '新增配置未就绪，恢复上一份配置并重建桥接服务。'
-        helper rollback-stream
-        compose up -d --no-deps --force-recreate bridge
-    fi
-    die '视频尚未就绪。首次配置保留供重试；新增配置已回退。请运行 bash deploy.sh status 和 logs 排查。'
-}
-
 summary() {
     say "前端：http://$LAN_IP:5081"
     say "Miloco：https://$LAN_IP:8000"
     say "RTSP：rtsp://$LAN_IP:8554/live/{streamId}（客户端须使用 TCP 和 Digest 认证）"
-    say '凭据已保存在 .deploy/secrets。运行 bash deploy.sh credentials 在终端查看 RTSP 凭据。'
+    say '先进入 Miloco 完成本地 PIN 设置和小米账号绑定，再在前端完成连接、摄像头与 RTSP 配置；初始化前 RTSP 端口保持关闭。'
+    say '配置保存在 .deploy/micamera-state/settings.db；网页重新配置后立即生效，无需重启后端。'
     say '前端通过内置同源代理访问后端，浏览器无需输入 Token。'
     say '打开页面后仍须确认实际画面；服务就绪不等于 WebRTC 端到端验收完成。'
     say '防火墙须允许可信局域网访问 TCP 8000/5080/5081/8554 和 UDP 50000–50100。脚本不会修改防火墙。'
 }
 
 main() {
-    local operation="up" count argument
+    local operation="up" argument
     for argument in "$@"; do
         case "$argument" in
             up|add-camera|build|status|logs|stop|credentials)
@@ -250,20 +266,22 @@ main() {
         esac
     done
     check_environment
-    if [[ "$operation" == status || "$operation" == logs || "$operation" == stop || "$operation" == credentials ]]; then
+    load_package_metadata
+    if [[ "$operation" == status || "$operation" == logs || "$operation" == stop || "$operation" == credentials || "$operation" == add-camera ]]; then
         [[ -f "$STATE_DIR/deployment.env" ]] || die '尚未初始化部署。'
         LAN_IP="$(awk -F= '$1=="LAN_IP" {print $2}' "$STATE_DIR/deployment.env")"
         case "$operation" in
             status) compose ps; helper status; summary ;;
             logs) compose logs --tail=100 ;;
             stop) compose stop; say '服务已停止；账号授权、配置和凭据均保留。' ;;
-            credentials) interactive || die '凭据只能在交互终端显示，避免被重定向到日志。'; helper credentials ;;
+            credentials|add-camera) say "请打开 http://$LAN_IP:5081 的重新配置入口；保存后立即应用新配置，无需重启后端。" ;;
         esac
         return
     fi
     select_ip
     build_images
     if [[ "$NON_INTERACTIVE" == true ]]; then
+        helper prepare-web-config
         helper validate-state "$LAN_IP"
         validate_current_config
     else
@@ -271,19 +289,15 @@ main() {
         license_notice
         helper ack-license
     fi
+    prepare_application_state
     check_ports
     [[ "$operation" != build ]] || { say '镜像构建完成，尚未启动服务。'; return; }
     compose up -d miloco web
     wait_probe miloco-live 120 || die 'Miloco 启动检查失败，账号数据已保留，请检查日志。'
-    authorize
-    count="$(helper stream-count)"
-    if [[ "$operation" == add-camera ]] || (( count == 0 )); then
-        add_camera
-    else
-        compose up -d bridge
-        wait_probe ready 120 || die '容器已启动，但媒体尚未就绪。请运行 status 和 logs。'
-    fi
-    say '[5/5] 服务、授权与当前视频检查通过。'
+    compose up -d bridge
+    wait_probe deployment-ready 120 || die '后端未启动，请运行 status 和 logs 排查。'
+    say '[5/5] 服务已启动，请进入网页完成初始化配置。'
+    cleanup_previous_deployment
     summary
 }
 

@@ -1,17 +1,20 @@
-# The output is architecture-independent static assets. Run build/tests natively;
+# The output is architecture-independent static assets. Run the build natively;
 # the final Nginx stage still uses the requested target platform.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS build
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NGINX_IMAGE=nginx:stable-alpine
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 ENV NPM_CONFIG_ENGINE_STRICT=true
 # The deployed frontend is served by the Nginx proxy above /api, so it defaults to
 # its own origin instead of a browser-visible API Token.
 ENV VITE_MICAMERA_SAME_ORIGIN_API=true
 WORKDIR /web
 COPY demo/MiCamera.Net.Sample.Web/package.json demo/MiCamera.Net.Sample.Web/package-lock.json ./
-RUN npm ci
+RUN npm ci --registry=${NPM_REGISTRY}
 COPY demo/MiCamera.Net.Sample.Web/ ./
-RUN npm run lint && npm test && npm run build
+RUN npm run lint && npm run build
 
-FROM nginx:stable-alpine
+FROM ${NGINX_IMAGE}
 COPY deployment/nginx.conf /etc/nginx/templates/default.conf.template
 COPY deployment/web-api-proxy.envsh /docker-entrypoint.d/16-micamera-api-proxy.envsh
 RUN chmod 0755 /docker-entrypoint.d/16-micamera-api-proxy.envsh

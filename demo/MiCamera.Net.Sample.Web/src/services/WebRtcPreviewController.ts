@@ -26,6 +26,11 @@ export class WebRtcPreviewController {
     private _videoElement: HTMLVideoElement | null = null;
     private _requestCancellation: AbortController | null = null;
     private _connectionTimeout: ReturnType<typeof setTimeout> | null = null;
+    private _progressTimer: ReturnType<typeof setInterval> | null = null;
+    private _streamId: string | null = null;
+    private _hasConnected = false;
+    private _decodedFrames: number | null = null;
+    private _lastProgressAt = 0;
 
     public constructor(apiClient: MiCameraApiClient, onStateChanged: StateListener) {
         this._apiClient = apiClient;
@@ -41,6 +46,7 @@ export class WebRtcPreviewController {
         }
 
         this._videoElement = videoElement;
+        this._streamId = streamId;
         this.report({ phase: "connecting", message: "正在创建 WebRTC 会话…" });
 
         let peer: RTCPeerConnection | null = null;
@@ -115,6 +121,11 @@ export class WebRtcPreviewController {
 
     private async release(notifyServer: boolean, keepalive = false): Promise<void> {
         this.clearTimeout();
+        if (this._progressTimer !== null) clearInterval(this._progressTimer);
+        this._progressTimer = null;
+        this._streamId = null;
+        this._hasConnected = false;
+        this._decodedFrames = null;
         this._requestCancellation?.abort();
         this._requestCancellation = null;
         const peer = this._peer;
@@ -177,6 +188,11 @@ export class WebRtcPreviewController {
             return;
         }
 
+        // Allow LAN jitter and NACK repairs to complete before rendering a frame.
+        if (event.track.kind === "video" && "jitterBufferTarget" in event.receiver) {
+            event.receiver.jitterBufferTarget = 300;
+        }
+
         const stream = event.streams[0] ?? this._mediaStream ?? new MediaStream();
         if (event.streams[0] === undefined && !stream.getTracks().some((track) => track.id === event.track.id)) {
             stream.addTrack(event.track);
@@ -199,12 +215,48 @@ export class WebRtcPreviewController {
 
         if (peer.connectionState === "connected") {
             this.clearTimeout();
+            if (!this._hasConnected) {
+                this._hasConnected = true;
+                this._lastProgressAt = Date.now();
+                this._progressTimer = setInterval(() => { void this.checkProgress(peer, generation); }, 5_000);
+            }
             this.report({ phase: "connected", message: "实时视频已连接。" });
             return;
         }
 
         if (peer.connectionState === "failed" || peer.connectionState === "closed") {
-            void this.fail(peer, generation, "WebRTC 连接已中断。");
+            if (this._hasConnected) void this.checkProgress(peer, generation);
+            else void this.fail(peer, generation, "WebRTC 连接已中断。");
+        }
+    }
+
+    private async checkProgress(peer: RTCPeerConnection, generation: number): Promise<void> {
+        if (!this.isCurrent(peer, generation) || document.hidden || !navigator.onLine) return;
+        const streamId = this._streamId;
+        const videoElement = this._videoElement;
+        if (streamId === null || videoElement === null) return;
+        if (peer.connectionState === "failed" || peer.connectionState === "closed") {
+            await this.start(streamId, videoElement);
+            return;
+        }
+        // A user-paused video is intentional. Hidden/offline pages wait until they resume;
+        // their next timer tick can recover a peer that still says connected but has no frames.
+        if (videoElement.paused) return;
+        let frames = 0;
+        try {
+            const stats = await peer.getStats();
+            stats.forEach((stat) => {
+                if (stat.type === "inbound-rtp" && stat.kind === "video") frames += stat.framesDecoded ?? 0;
+            });
+        } catch {
+            return;
+        }
+        if (!this.isCurrent(peer, generation)) return;
+        if (frames !== this._decodedFrames) {
+            this._decodedFrames = frames;
+            this._lastProgressAt = Date.now();
+        } else if (Date.now() - this._lastProgressAt >= 15_000) {
+            await this.start(streamId, videoElement);
         }
     }
 

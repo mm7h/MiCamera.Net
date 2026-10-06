@@ -13,17 +13,26 @@ namespace MiCamera.Net.Server.Providers;
 /// </summary>
 internal sealed class CameraStreamHub : ICameraStreamProvider
 {
-    private readonly IReadOnlyDictionary<string, CameraStreamHubState> _states;
+    private readonly MiCameraServerOptions _options;
+    private static readonly IReadOnlyDictionary<string, CameraStreamHubState> EmptyStates = new Dictionary<string, CameraStreamHubState>();
+    private volatile Lazy<IReadOnlyDictionary<string, CameraStreamHubState>> _initializedStates;
+    private IReadOnlyDictionary<string, CameraStreamHubState> _states => this._options.Initialization.Configured
+        ? this._initializedStates.Value : EmptyStates;
 
     public CameraStreamHub(MiCameraServerOptions options)
     {
-        this._states = options.Streams.ToDictionary(
+        this._options = options;
+        this._initializedStates = this.CreateStates();
+    }
+
+    public void Reset() => this._initializedStates = this.CreateStates();
+
+    private Lazy<IReadOnlyDictionary<string, CameraStreamHubState>> CreateStates() => new(() => this._options.Streams.ToDictionary(
             stream => stream.StreamId,
             stream => new CameraStreamHubState(
                 new CameraStreamDescriptor(stream.StreamId, stream.CameraDeviceId, stream.Channel, stream.Codec),
-                options.Streaming.SubscriberBufferCapacity),
-            StringComparer.OrdinalIgnoreCase);
-    }
+                this._options.Streaming.SubscriberBufferCapacity),
+            StringComparer.OrdinalIgnoreCase));
 
     public IReadOnlyCollection<CameraStreamDescriptor> Streams =>
         this._states.Values.Select(static state => state.Descriptor).ToArray();

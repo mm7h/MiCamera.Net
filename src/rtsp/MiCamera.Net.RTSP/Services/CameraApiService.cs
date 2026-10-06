@@ -51,13 +51,14 @@ public sealed class CameraApiService
 
     public IActionResult GetSnapshot(string streamId)
     {
-        if (!this._streams.TryGetSnapshot(streamId, out _))
+        var stream = this._streams.Streams.FirstOrDefault(stream => string.Equals(stream.StreamId, streamId, StringComparison.OrdinalIgnoreCase));
+        if (stream is null)
         {
             return new NotFoundObjectResult(new { error = "The camera stream was not found." });
         }
 
         MediaRuntimeReport runtime = MediaRuntimeDiagnostics.Current;
-        VideoCodec codec = this._streams.Streams.First(stream => string.Equals(stream.StreamId, streamId, StringComparison.OrdinalIgnoreCase)).Codec;
+        VideoCodec codec = stream.Codec;
         if (!this._options.Snapshot.Enabled || !runtime.NativeLibrariesAvailable || !runtime.MjpegEncoder ||
             (codec == VideoCodec.H264 ? !runtime.H264Decoder : !runtime.HevcDecoder))
         {

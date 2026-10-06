@@ -18,3 +18,4 @@ AGENTS.md
 
 /.deploy/
 **/__pycache__/
+/deployment/build_output/

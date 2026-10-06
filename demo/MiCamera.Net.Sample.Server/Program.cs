@@ -25,6 +25,7 @@ try
         .CreateServerBuilder()
         .Initialize(configuration.Server)
         .WithRtsp(options => ApplyRtspOptions(options, configuration.MediaServer))
+        .WithWebSetup()
         .Build();
 
     await host.RunAsync();

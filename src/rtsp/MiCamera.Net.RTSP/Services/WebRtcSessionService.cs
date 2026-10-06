@@ -1,12 +1,14 @@
 ﻿using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Net;
+using System.Diagnostics;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Abstractions.Streams;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using MiCamera.Net.RTSP.Abstractions.Web;
 using MiCamera.Net.Media.Services;
+using MiCamera.Net.RTSP.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -29,6 +31,11 @@ public sealed class WebRtcSessionService : IDisposable
     private readonly ConcurrentDictionary<string, WebRtcSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _peerSlots = new(StringComparer.OrdinalIgnoreCase);
     private bool _disposed;
+    private readonly object _lifecycleLock = new();
+    private CancellationTokenSource _creationCancellation = new();
+    private TaskCompletionSource _creationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _activeCreations;
+    private bool _paused;
 
     public WebRtcSessionService(
         ICameraStreamProvider streams,
@@ -45,6 +52,52 @@ public sealed class WebRtcSessionService : IDisposable
     }
 
     public async Task<IActionResult> CreateAsync(CreateWebRtcSessionRequest request, CancellationToken cancellationToken)
+    {
+        CancellationTokenSource linked;
+        lock (this._lifecycleLock)
+        {
+            if (this._paused || this._disposed) return ServiceUnavailable("Configuration is being applied. Please reconnect shortly.");
+            linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this._creationCancellation.Token);
+            if (this._activeCreations == 0) this._creationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            this._activeCreations++;
+        }
+        try { return await this.CreateCoreAsync(request, linked.Token).ConfigureAwait(false); }
+        finally
+        {
+            linked.Dispose();
+            lock (this._lifecycleLock)
+            {
+                if (--this._activeCreations == 0) this._creationsDrained.TrySetResult();
+            }
+        }
+    }
+
+    public async Task PauseAsync()
+    {
+        Task drained;
+        lock (this._lifecycleLock)
+        {
+            this._paused = true;
+            if (this._activeCreations == 0) this._creationsDrained.TrySetResult();
+            drained = this._creationsDrained.Task;
+        }
+        this._creationCancellation.Cancel();
+        await drained.ConfigureAwait(false);
+        foreach (string id in this._sessions.Keys) this.Delete(id);
+    }
+
+    public void Resume()
+    {
+        lock (this._lifecycleLock)
+        {
+            this._creationCancellation.Dispose();
+            this._creationCancellation = new();
+            this._creationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            this._paused = false;
+        }
+    }
+
+    private async Task<IActionResult> CreateCoreAsync(CreateWebRtcSessionRequest request, CancellationToken cancellationToken)
     {
         if (!this._options.WebRtc.Enabled)
         {
@@ -77,7 +130,7 @@ public sealed class WebRtcSessionService : IDisposable
         RTCPeerConnection peer;
         try
         {
-            peer = new(this.CreateConfiguration(), portRange: ports);
+            peer = new CameraPeerConnection(this.CreateConfiguration(), ports, this._logger, request.StreamId);
         }
         catch (Exception)
         {
@@ -85,8 +138,58 @@ public sealed class WebRtcSessionService : IDisposable
             return ServiceUnavailable("WebRTC UDP socket allocation failed. Check the bind address and available UDP port range.");
         }
 
-        WebRtcSession session = new(id, request.StreamId, peer, () => slots.Release());
+        long lastRecovery = 0;
+        void RequestRecovery()
+        {
+            lock (this._lifecycleLock)
+            {
+                if (this._paused || this._disposed) return;
+                long now = Environment.TickCount64;
+                long previous = Interlocked.Read(ref lastRecovery);
+                if (now - previous >= 500 && Interlocked.CompareExchange(ref lastRecovery, now, previous) == previous)
+                    this._media.RequestKeyFrame(request.StreamId);
+            }
+        }
+        WebRtcSession session = new(id, request.StreamId, peer, RequestRecovery, () => slots.Release());
         peer.onconnectionstatechange += state => this.HandleConnectionStateChanged(session, state);
+        peer.OnReceiveReport += (_, media, report) =>
+        {
+            if (media != SDPMediaTypesEnum.video || report.Feedback is not { } feedback) return;
+            if (feedback.Header.PacketType == RTCPReportTypesEnum.PSFB &&
+                feedback.Header.PayloadFeedbackMessageType is PSFBFeedbackTypesEnum.PLI or PSFBFeedbackTypesEnum.FIR)
+            {
+                RequestRecovery();
+            }
+        };
+
+        // The media stack closes a peer on its own when something below WebRTC fails. Without these
+        // the only trace of the cause is a bare "connection changed to closed".
+        RtpIceChannel iceChannel = peer.GetRtpChannel();
+        long stunReceived = 0, stunSent = 0, lastStunReceivedTicks = Environment.TickCount64;
+        iceChannel.OnStunMessageReceived += (_, _, _) =>
+        {
+            Interlocked.Increment(ref stunReceived);
+            Interlocked.Exchange(ref lastStunReceivedTicks, Environment.TickCount64);
+        };
+        iceChannel.OnStunMessageSent += (_, _, _) => Interlocked.Increment(ref stunSent);
+        peer.oniceconnectionstatechange += state =>
+            this._logger.LogInformation(
+                "WebRTC ICE state for {StreamId} changed to {State}; stunIn={StunIn}, stunOut={StunOut}, stunIdle={StunIdleMs} ms.",
+                request.StreamId, state, Interlocked.Read(ref stunReceived), Interlocked.Read(ref stunSent),
+                Environment.TickCount64 - Interlocked.Read(ref lastStunReceivedTicks));
+        peer.onicecandidateerror += (candidate, error) =>
+            this._logger.LogWarning("WebRTC ICE candidate error for {StreamId}: {Error}.", request.StreamId, error);
+        peer.OnTimeout += media =>
+        {
+            this._logger.LogWarning("WebRTC media timeout for {StreamId} on {Media}.", request.StreamId, media);
+            if (media == SDPMediaTypesEnum.video && session.HasConnected &&
+                this._sessions.TryRemove(session.Id, out WebRtcSession? expired))
+                expired.Dispose();
+        };
+        peer.OnRtcpBye += reason =>
+            this._logger.LogInformation("WebRTC RTCP BYE for {StreamId}: {Reason}.", request.StreamId, string.IsNullOrWhiteSpace(reason) ? "<none>" : reason);
+        peer.OnRtpClosed += reason =>
+            this._logger.LogWarning("WebRTC RTP channel closed for {StreamId}: {Reason}.", request.StreamId, string.IsNullOrWhiteSpace(reason) ? "<none>" : reason);
 
         try
         {
@@ -120,10 +223,13 @@ public sealed class WebRtcSessionService : IDisposable
             VideoFormat h264 = new(VideoCodecsEnum.H264, 96, 90_000, $"packetization-mode=1;profile-level-id={profile};level-asymmetry-allowed=1");
             peer.addTrack(new MediaStreamTrack([h264], MediaStreamStatusEnum.SendOnly));
             RTCSessionDescriptionInit offer = peer.createOffer(null);
+            // Raw SendVideo does not respond to feedback on behalf of our encoder.
+            offer.sdp += "a=rtcp-fb:96 nack\r\na=rtcp-fb:96 nack pli\r\na=rtcp-fb:96 ccm fir\r\n";
             await peer.setLocalDescription(offer).ConfigureAwait(false);
 
             session.NegotiationStartedAt = DateTimeOffset.UtcNow;
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (!this._sessions.TryAdd(id, session))
             {
                 session.Dispose();
@@ -214,6 +320,8 @@ public sealed class WebRtcSessionService : IDisposable
             {
                 if (this._sessions.TryRemove(pair.Key, out WebRtcSession? removed))
                 {
+                    this._logger.LogInformation("Removing expired WebRTC session for {StreamId}; connected={Connected}, disconnectedAt={DisconnectedAt}.",
+                        session.StreamId, session.HasConnected, session.DisconnectedAt);
                     removed.Dispose();
                 }
             }
@@ -256,10 +364,14 @@ public sealed class WebRtcSessionService : IDisposable
 
     private void HandleConnectionStateChanged(WebRtcSession session, RTCPeerConnectionState state)
     {
+        this._logger.LogInformation("WebRTC connection for {StreamId} changed to {State}.", session.StreamId, state);
+        if (state == RTCPeerConnectionState.closed)
+            this._logger.LogInformation("WebRTC {StreamId} retransmitted {Packets} packets.", session.StreamId, session.RetransmittedPackets);
         switch (state)
         {
             case RTCPeerConnectionState.connected:
                 session.MarkConnected();
+                session.EnableRetransmissions();
                 session.StartMediaPump(() => this.PumpMediaAsync(session));
                 break;
             case RTCPeerConnectionState.disconnected:
@@ -280,10 +392,76 @@ public sealed class WebRtcSessionService : IDisposable
     {
         try
         {
+            ushort sequence = session.Peer.VideoLocalTrack.GetNextSeqNum();
+            Stopwatch clock = Stopwatch.StartNew();
+            VideoPlayoutScheduler playout = new(this._options.WebRtc.PlayoutDelay);
+            // The schedule can only hold a unit it already has, so the receiver sees exactly the gap
+            // with which the units reach this loop. Reporting both sides separates a starved pump
+            // from a schedule that is holding frames for too long.
+            double previousArrivalMs = 0, previousSendMs = 0, maxArrivalGapMs = 0, maxSendGapMs = 0, maxWaitMs = 0;
+            long windowStartMs = clock.ElapsedMilliseconds;
+            int units = 0, sends = 0, lateFrames = 0;
+            long packets = 0;
+            long? previousSequence = null;
             await foreach (VideoAccessUnit unit in this._media.SubscribeAsync(session.StreamId, VideoCodec.H264, session.Cancellation.Token)
                 .ConfigureAwait(false))
             {
-                session.Peer.SendVideo(unit.Duration90Khz, unit.AnnexB.ToArray());
+                // The relay delivers this stream in bursts separated by holes of hundreds of
+                // milliseconds. Sending on arrival hands those holes to the receiver's jitter
+                // buffer as freezes, so every unit waits for the slot its own timestamp gives it.
+                double now = clock.Elapsed.TotalSeconds;
+                if (units > 0)
+                {
+                    maxArrivalGapMs = Math.Max(maxArrivalGapMs, (now - previousArrivalMs) * 1000);
+                }
+
+                previousArrivalMs = now;
+                units++;
+                bool framesSkipped = previousSequence is { } previous && unit.SourceSequence > previous + 1;
+                previousSequence = unit.SourceSequence;
+                double wait = playout.WaitSeconds(now, unit.Timestamp90Khz, framesSkipped);
+                if (wait < 0.001)
+                {
+                    lateFrames++;
+                }
+                else
+                {
+                    maxWaitMs = Math.Max(maxWaitMs, wait * 1000);
+                    await Task.Delay(TimeSpan.FromSeconds(wait), session.Cancellation.Token).ConfigureAwait(false);
+                }
+
+                IReadOnlyList<byte[]> framePackets = RtpPacketizer.Packetize(unit, session.Peer.VideoLocalTrack.Ssrc, ref sequence, 1200);
+                int burstSize = Math.Max(1, (framePackets.Count + 19) / 20);
+                for (int index = 0; index < framePackets.Count; index++)
+                {
+                    // Spread each frame over at most 20 one-millisecond bursts. Key frames contain
+                    // dozens of packets; a single burst stresses downstream receive queues even
+                    // on a wired LAN. Leave room for reception and NACK repairs between bursts.
+                    if (index > 0 && index % burstSize == 0)
+                        await Task.Delay(1, session.Cancellation.Token).ConfigureAwait(false);
+                    session.SendVideoPacket(framePackets[index]);
+                    packets++;
+                }
+
+                double sentAt = clock.Elapsed.TotalSeconds;
+                if (sends > 0)
+                {
+                    maxSendGapMs = Math.Max(maxSendGapMs, (sentAt - previousSendMs) * 1000);
+                }
+
+                previousSendMs = sentAt;
+                sends++;
+                if (clock.ElapsedMilliseconds - windowStartMs >= 30_000)
+                {
+                    this._logger.LogInformation(
+                        "WebRTC playout {StreamId}: {Units} units, {Packets} packets, arrivalGapMax={ArrivalGap:F1} ms, sendGapMax={SendGap:F1} ms, late={Late}, waitMax={Wait:F1} ms, delay={Delay:F0} ms, nackMsgs={NackMsgs}, nackPackets={NackPackets}, resent={Resent}.",
+                        session.StreamId, units, packets, maxArrivalGapMs, maxSendGapMs, lateFrames, maxWaitMs, playout.DelaySeconds * 1000,
+                        session.NackMessages, session.NackPackets, session.RetransmittedPackets);
+                    windowStartMs = clock.ElapsedMilliseconds;
+                    units = sends = lateFrames = 0;
+                    packets = 0;
+                    maxArrivalGapMs = maxSendGapMs = maxWaitMs = 0;
+                }
             }
         }
         catch (OperationCanceledException) when (session.Cancellation.IsCancellationRequested)
@@ -305,6 +483,16 @@ public sealed class WebRtcSessionService : IDisposable
             .TrimEnd('=')
             .Replace('+', '-')
             .Replace('/', '_');
+    }
+
+    private sealed class CameraPeerConnection(RTCConfiguration configuration, PortRange? ports,
+        ILogger sessionLogger, string streamId) : RTCPeerConnection(configuration, portRange: ports)
+    {
+        public override void Close(string reason)
+        {
+            if (!this.IsClosed) sessionLogger.LogInformation("Closing WebRTC {StreamId}: {Reason}.", streamId, reason);
+            base.Close(reason);
+        }
     }
 
     internal static bool TryReadH264Profile(VideoCodecParameters parameters, out string profile)
