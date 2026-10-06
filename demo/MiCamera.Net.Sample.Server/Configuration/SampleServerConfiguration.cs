@@ -24,7 +24,7 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         });
         if (document.RootElement.ValueKind != JsonValueKind.Object)
         {
-            throw new JsonException("The MiCamera configuration must be a JSON object.");
+            throw new JsonException("MiCamera 配置必须是 JSON 对象。");
         }
 
         // Reject the old layout instead of silently ignoring credentials or listener settings.
@@ -33,12 +33,12 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         {
             if (string.Equals(property.Name, "Streams", StringComparison.OrdinalIgnoreCase))
             {
-                throw new JsonException("Top-level Streams is no longer supported. Configure streams through the web UI.");
+                throw new JsonException("不再支持顶层 Streams 配置，请通过网页配置摄像头流。");
             }
 
             if (legacySections.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
             {
-                throw new JsonException($"Top-level {property.Name} is no longer supported. Move media service settings into MediaServer.");
+                throw new JsonException($"不再支持顶层 {property.Name} 配置，请将媒体服务配置移至 MediaServer。");
             }
         }
 
@@ -52,7 +52,7 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         ConfigurationFile configuration = document.RootElement.Deserialize<ConfigurationFile>(serializerOptions)!;
         if (configuration.MediaServer is null)
         {
-            throw new JsonException("MediaServer must be a JSON object.");
+            throw new JsonException("MediaServer 必须是 JSON 对象。");
         }
 
         MiCameraRtspOptions media = configuration.MediaServer.ToRuntimeOptions();
@@ -60,84 +60,5 @@ internal sealed record SampleServerConfiguration(MiCameraServerOptions Server, M
         media.Rtsp.Password = string.Empty;
         media.Rtsp.WebManaged = true;
         return new SampleServerConfiguration(serverOptions, media);
-    }
-
-    private sealed class ConfigurationFile
-    {
-        [JsonRequired]
-        public MediaServerConfiguration? MediaServer { get; set; }
-    }
-
-    private sealed class MediaServerConfiguration
-    {
-        public string ListenAddress { get; set; } = "http://127.0.0.1:5080";
-        public string BearerToken { get; set; } = string.Empty;
-        public List<string> AllowedOrigins { get; set; } = [];
-        public FFmpegConfiguration FFmpeg { get; set; } = new();
-        public RtspEndpointOptions Rtsp { get; set; } = new();
-        public WebRtcOptions WebRtc { get; set; } = new();
-        public SnapshotOptions Snapshot { get; set; } = new();
-
-        public MiCameraRtspOptions ToRuntimeOptions()
-        {
-            if (FFmpeg is null)
-            {
-                throw new JsonException("MediaServer.FFmpeg must be a JSON object.");
-            }
-
-            return new MiCameraRtspOptions
-            {
-                Http = new HttpEndpointOptions
-                {
-                    ListenUrl = ListenAddress,
-                    BearerToken = BearerToken,
-                    AllowedOrigins = AllowedOrigins
-                },
-                Media = new MediaProcessingOptions
-                {
-                    NativeLibraryPath = string.IsNullOrWhiteSpace(FFmpeg.Path) || System.IO.Path.IsPathFullyQualified(FFmpeg.Path)
-                        ? FFmpeg.Path
-                        : System.IO.Path.GetFullPath(FFmpeg.Path, AppContext.BaseDirectory),
-                    H264EncoderName = FFmpeg.H264EncoderName,
-                    H264Bitrate = FFmpeg.H264Bitrate,
-                    H264Preset = FFmpeg.H264Preset,
-                    H264MaxWidth = FFmpeg.H264MaxWidth,
-                    H264MaxHeight = FFmpeg.H264MaxHeight,
-                    KeyFrameInterval = FFmpeg.KeyFrameInterval
-                },
-                Rtsp = Rtsp,
-                WebRtc = WebRtc,
-                Snapshot = Snapshot
-            };
-        }
-    }
-
-    private sealed class FFmpegConfiguration
-    {
-        public string Path { get; set; } = string.Empty;
-        public string H264EncoderName { get; set; } = "libx264";
-        public int H264Bitrate { get; set; } = 2_500_000;
-        public string H264Preset { get; set; } = "veryfast";
-        public int H264MaxWidth { get; set; }
-        public int H264MaxHeight { get; set; }
-        public TimeSpan KeyFrameInterval { get; set; } = TimeSpan.FromSeconds(2);
-    }
-
-    private sealed class SecondsTimeSpanJsonConverter : JsonConverter<TimeSpan>
-    {
-        public override TimeSpan Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-        {
-            if (reader.TokenType != JsonTokenType.Number || !reader.TryGetDouble(out double seconds))
-            {
-                throw new JsonException("Durations must be JSON numbers expressed in seconds.");
-            }
-
-            return TimeSpan.FromSeconds(seconds);
-        }
-
-        public override void Write(Utf8JsonWriter writer, TimeSpan value, JsonSerializerOptions options)
-        {
-            writer.WriteNumberValue(value.TotalSeconds);
-        }
     }
 }

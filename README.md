@@ -44,9 +44,10 @@
 
 前往 **[GitHub Releases 下载构建包](https://github.com/mm7h/MiCamera.Net/releases)**，选择目标版本的 `micamera-net-<版本>-linux-amd64.tar.gz` 或 `linux-arm64.tar.gz`，同时下载对应 `.sha256`。构建包包含桥接和前端镜像，不包含 **Miloco** 镜像。
 
-**推荐自行构建**：在具备 Python 3、Docker 和 buildx 的构建机器上获取源码，在仓库根目录执行，例如生成 amd64 包：
+**推荐自行构建**：在具备 Python 3.13.2（本机使用版本）、Docker 和 buildx 的构建机器上获取源码，在仓库根目录执行，例如生成 amd64 包：
 
 ```bash
+python3 --version
 python3 deployment/build-package.py local-build --arch amd64
 ```
 

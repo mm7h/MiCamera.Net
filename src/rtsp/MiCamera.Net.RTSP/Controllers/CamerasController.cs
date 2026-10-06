@@ -5,14 +5,9 @@ namespace MiCamera.Net.RTSP.Controllers;
 
 [ApiController]
 [Route("api/cameras")]
-public sealed class CamerasController : ControllerBase
+public sealed class CamerasController(CameraApiService service) : ControllerBase
 {
-    private readonly CameraApiService _service;
-
-    public CamerasController(CameraApiService service)
-    {
-        this._service = service;
-    }
+    private readonly CameraApiService _service = service;
 
     [HttpGet]
     public IActionResult GetCameras() => this._service.GetCameras();

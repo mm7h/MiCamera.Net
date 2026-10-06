@@ -1,16 +1,15 @@
-using SIPSorcery.Net;
-
+﻿using System.Buffers.Binary;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
-using System.Buffers.Binary;
+using SIPSorcery.Net;
 
 namespace MiCamera.Net.RTSP.Services;
 
-internal sealed class WebRtcSession : IDisposable
+internal sealed class WebRtcSession(string id, string streamId, RTCPeerConnection peer, Action requestKeyFrame, Action? releasePeerSlot = null) : IDisposable
 {
     private int _mediaStarted;
     private int _disposed;
-    private readonly Action? _releasePeerSlot;
-    private readonly Action _requestKeyFrame;
+    private readonly Action? _releasePeerSlot = releasePeerSlot;
+    private readonly Action _requestKeyFrame = requestKeyFrame;
     /// <summary>
     /// Packets kept for repair. A lossy link asks for the same packet repeatedly, so the history has
     /// to outlast the receiver's whole recovery window rather than a single round trip.
@@ -34,20 +33,11 @@ internal sealed class WebRtcSession : IDisposable
     private uint _senderTimestamp;
     private ulong _senderNtp;
 
-    public WebRtcSession(string id, string streamId, RTCPeerConnection peer, Action requestKeyFrame, Action? releasePeerSlot = null)
-    {
-        this.Id = id;
-        this.StreamId = streamId;
-        this.Peer = peer;
-        this._requestKeyFrame = requestKeyFrame;
-        this._releasePeerSlot = releasePeerSlot;
-    }
+    public string Id { get; } = id;
 
-    public string Id { get; }
+    public string StreamId { get; } = streamId;
 
-    public string StreamId { get; }
-
-    public RTCPeerConnection Peer { get; }
+    public RTCPeerConnection Peer { get; } = peer;
 
     public long RetransmittedPackets => Interlocked.Read(ref this._retransmittedPackets);
 
@@ -61,7 +51,10 @@ internal sealed class WebRtcSession : IDisposable
     {
         lock (this._rtpSync)
         {
-            if (this._feedbackInstalled) return;
+            if (this._feedbackInstalled)
+            {
+                return;
+            }
             // Preserve the negotiated DTLS/SRTP state and authentication/replay checks. Wrap the
             // actual receive context so every NACK FCI is visible before the library truncates it.
             // A video-only peer still has an audio PrimaryStream. Before an SSRC is mapped the
@@ -79,12 +72,15 @@ internal sealed class WebRtcSession : IDisposable
                     {
                         int result = context.UnprotectRtcpPacket(packet, length, out outputLength);
                         if (result == 0)
+                        {
                             WebRtcFeedback.Handle(packet.AsSpan(0, outputLength), this.Peer.VideoLocalTrack.Ssrc,
                                 sequence =>
                                 {
                                     Interlocked.Increment(ref this._nackPackets);
                                     this.Retransmit(sequence);
                                 }, this._requestKeyFrame, () => Interlocked.Increment(ref this._nackMessages));
+                        }
+
                         return result;
                     });
             }
@@ -155,9 +151,9 @@ internal sealed class WebRtcSession : IDisposable
             int result = context.ProtectRtpPacket(packet, length, out outputLength);
             if (matches && result == 0)
             {
-                var original = sent!.Value;
-                this._packetHistory[slot] = (original.Packet, packet.AsSpan(0, outputLength).ToArray(),
-                    original.SentAt, original.Retries);
+                var (originalPacket, _, originalSentAt, originalRetries) = sent!.Value;
+                this._packetHistory[slot] = (originalPacket, packet.AsSpan(0, outputLength).ToArray(),
+                    originalSentAt, originalRetries);
             }
             return result;
         }
@@ -171,15 +167,26 @@ internal sealed class WebRtcSession : IDisposable
     {
         lock (this._rtpSync)
         {
-            if (!this._senderClockStarted) return;
+            if (!this._senderClockStarted)
+            {
+                return;
+            }
+
             while (packet.Length >= 4)
             {
                 int length = (BinaryPrimitives.ReadUInt16BigEndian(packet[2..]) + 1) * 4;
-                if (packet[0] >> 6 != 2 || length > packet.Length) return;
+                if (packet[0] >> 6 != 2 || length > packet.Length)
+                {
+                    return;
+                }
+
                 Span<byte> report = packet[..length];
                 packet = packet[length..];
                 if (report[1] != 200 || report.Length < 28 ||
-                    BinaryPrimitives.ReadUInt32BigEndian(report[4..]) != this.Peer.VideoLocalTrack.Ssrc) continue;
+                    BinaryPrimitives.ReadUInt32BigEndian(report[4..]) != this.Peer.VideoLocalTrack.Ssrc)
+                {
+                    continue;
+                }
                 // SIPSorcery 10.0.17 pairs current NTP with the last packet's RTP timestamp,
                 // including retransmissions. RFC 3550 requires the RTP clock at that NTP time.
                 // Signed fixed-point subtraction also handles a report built just before a
@@ -231,7 +238,7 @@ internal sealed class WebRtcSession : IDisposable
         try
         {
             this.Cancellation.Cancel();
-            this.Peer.Close("session closed");
+            this.Peer.Close("会话已关闭");
         }
         finally
         {

@@ -1,3 +1,4 @@
+﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Abstractions.Common.Models;
@@ -7,16 +8,15 @@ using MiCamera.Net.Media.Runtime;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using Microsoft.Extensions.Logging;
-using System.Diagnostics;
 
 namespace MiCamera.Net.Media.Services;
 
-internal sealed class StreamPipeline : IDisposable
+internal sealed class StreamPipeline(CameraStreamOptions stream, MiCameraRtspOptions options, ILogger logger) : IDisposable
 {
-    private readonly CameraStreamOptions _stream;
-    private readonly MiCameraRtspOptions _options;
-    private readonly ILogger _logger;
-    private readonly VideoAccessUnitClock _clock;
+    private readonly CameraStreamOptions _stream = stream;
+    private readonly MiCameraRtspOptions _options = options;
+    private readonly ILogger _logger = logger;
+    private readonly VideoAccessUnitClock _clock = new(stream.StreamId, stream.Codec, stream.NominalFrameRate);
     private readonly VideoBroadcastHub _sourceHub = new();
     private readonly VideoBroadcastHub _h264Hub = new();
     private readonly object _sync = new();
@@ -28,14 +28,6 @@ internal sealed class StreamPipeline : IDisposable
     private long _lastSnapshotTicks;
     private int _h264SubscriberCount;
     private bool _disposed;
-
-    public StreamPipeline(CameraStreamOptions stream, MiCameraRtspOptions options, ILogger logger)
-    {
-        this._stream = stream;
-        this._options = options;
-        this._logger = logger;
-        this._clock = new VideoAccessUnitClock(stream.StreamId, stream.Codec, stream.NominalFrameRate);
-    }
 
     public async IAsyncEnumerable<VideoAccessUnit> SubscribeAsync(
         VideoCodec? requestedCodec,
@@ -55,12 +47,12 @@ internal sealed class StreamPipeline : IDisposable
         if (codec != VideoCodec.H264 || this._stream.Codec != VideoCodec.H265)
         {
             throw new NotSupportedException(
-                $"Camera stream '{this._stream.StreamId}' cannot provide {codec} from {this._stream.Codec}.");
+                $"摄像头流“{this._stream.StreamId}”无法将 {this._stream.Codec} 转换为 {codec} 输出。");
         }
 
         if (!FFmpegRuntime.IsAvailable)
         {
-            throw new InvalidOperationException("H.265 to H.264 transcoding requires FFmpeg native libraries.");
+            throw new InvalidOperationException("H.265 转 H.264 需要 FFmpeg 原生库。");
         }
 
         Interlocked.Increment(ref this._h264SubscriberCount);
@@ -95,7 +87,7 @@ internal sealed class StreamPipeline : IDisposable
             parameters = new VideoCodecParameters(
                 this._stream.StreamId,
                 this._stream.Codec,
-                this._parameterSets.OrderBy(static pair => pair.Key).Select(static pair => pair.Value).ToArray());
+                [.. this._parameterSets.OrderBy(static pair => pair.Key).Select(static pair => pair.Value)]);
             return true;
         }
     }
@@ -146,8 +138,8 @@ internal sealed class StreamPipeline : IDisposable
         }
 
         reason = codec == VideoCodec.H264 && this._stream.Codec == VideoCodec.H265
-            ? "H.265 to H.264 WebRTC conversion requires working FFmpeg decoders and encoders."
-            : $"The camera stream cannot provide {codec} from {this._stream.Codec}.";
+            ? "H.265 转 H.264 的 WebRTC 转码需要可用的 FFmpeg 解码器和编码器。"
+            : $"此摄像头流无法将 {this._stream.Codec} 转换为 {codec} 输出。";
         return false;
     }
 
@@ -167,10 +159,16 @@ internal sealed class StreamPipeline : IDisposable
             {
                 inputs++;
                 if (previousSequence is { } previous && chunk.Sequence > previous + 1)
+                {
                     skipped += (int)(chunk.Sequence - previous - 1);
+                }
+
                 previousSequence = chunk.Sequence;
                 if (previousArrival is { } arrival)
+                {
                     maxInputGapMs = Math.Max(maxInputGapMs, (chunk.ReceivedAt - arrival).TotalMilliseconds);
+                }
+
                 previousArrival = chunk.ReceivedAt;
                 maxQueueMs = Math.Max(maxQueueMs, (DateTimeOffset.UtcNow - chunk.ReceivedAt).TotalMilliseconds);
                 VideoAccessUnit unit = this._clock.Create(chunk);
@@ -199,7 +197,10 @@ internal sealed class StreamPipeline : IDisposable
                             unit,
                             Volatile.Read(ref this._h264SubscriberCount) > 0,
                             this.SnapshotWanted());
-                        if (result is not null) this._processorFailure = null;
+                        if (result is not null)
+                        {
+                            this._processorFailure = null;
+                        }
                     }
                     double elapsedMs = Stopwatch.GetElapsedTime(processingStarted).TotalMilliseconds;
                     processMs += elapsedMs;
@@ -229,7 +230,7 @@ internal sealed class StreamPipeline : IDisposable
                     {
                         TimeSpan gcPause = GC.GetTotalPauseDuration();
                         long allocated = GC.GetTotalAllocatedBytes();
-                        this._logger.LogInformation("Media performance {StreamId}: input={InputFps:F1} fps, H264={OutputFps:F1} fps, skipped={Skipped}, process={MeanMs:F1}/{MaxMs:F1} ms mean/max, queueMax={QueueMs:F1} ms, inputGapMax={InputGapMs:F1} ms, GCpause={GcPauseMs:F1} ms, alloc={AllocatedMb:F1} MB/s, workers={Workers}, pending={Pending}.",
+                        this._logger.LogInformation("摄像头流 {StreamId} 的媒体性能：输入={InputFps:F1} 帧/秒，H.264 输出={OutputFps:F1} 帧/秒，跳过帧数={Skipped}，处理耗时（平均/最大）={MeanMs:F1}/{MaxMs:F1} 毫秒，最大排队时间={QueueMs:F1} 毫秒，最大输入间隔={InputGapMs:F1} 毫秒，GC 暂停时间={GcPauseMs:F1} 毫秒，内存分配速率={AllocatedMb:F1} MB/秒，工作线程数={Workers}，待处理任务数={Pending}。",
                             this._stream.StreamId, inputs / seconds, outputs / seconds, skipped,
                             processMs / inputs, maxProcessMs, maxQueueMs, maxInputGapMs,
                             (gcPause - previousGcPause).TotalMilliseconds, (allocated - previousAllocated) / seconds / 1_000_000,
@@ -243,7 +244,7 @@ internal sealed class StreamPipeline : IDisposable
                 }
                 catch (Exception exception)
                 {
-                    this._logger.LogError(exception, "FFmpeg processing failed for camera stream {StreamId}.", this._stream.StreamId);
+                    this._logger.LogError(exception, "摄像头流 {StreamId} 的 FFmpeg 处理失败。", this._stream.StreamId);
                     lock (this._sync)
                     {
                         this._processorFailure = exception;
@@ -256,7 +257,7 @@ internal sealed class StreamPipeline : IDisposable
         }
         catch (Exception exception)
         {
-            this._logger.LogError(exception, "Media stream worker stopped for camera stream {StreamId}.", this._stream.StreamId);
+            this._logger.LogError(exception, "摄像头流 {StreamId} 的媒体工作线程已停止。", this._stream.StreamId);
         }
         finally
         {
@@ -335,7 +336,7 @@ internal sealed class StreamPipeline : IDisposable
             }
 
             this._processorFailure = error;
-            this._logger.LogError(error, "FFmpeg initialization failed for camera stream {StreamId}.", this._stream.StreamId);
+            this._logger.LogError(error, "摄像头流 {StreamId} 的 FFmpeg 初始化失败。", this._stream.StreamId);
             return null;
         }
     }

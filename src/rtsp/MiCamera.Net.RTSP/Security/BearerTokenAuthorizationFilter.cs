@@ -6,14 +6,9 @@ using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace MiCamera.Net.RTSP.Security;
 
-internal sealed class BearerTokenAuthorizationFilter : IAuthorizationFilter
+internal sealed class BearerTokenAuthorizationFilter(MiCameraRtspOptions options) : IAuthorizationFilter
 {
-    private readonly MiCameraRtspOptions _options;
-
-    public BearerTokenAuthorizationFilter(MiCameraRtspOptions options)
-    {
-        this._options = options;
-    }
+    private readonly MiCameraRtspOptions _options = options;
 
     public void OnAuthorization(AuthorizationFilterContext context)
     {

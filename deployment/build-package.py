@@ -41,7 +41,7 @@ def package(version, arch, reuse, build_args):
             run("docker", "buildx", "build", "--platform", f"linux/{arch}", "--load", "-t", image,
                 "-f", f"deployment/Dockerfile.{name}", *extra, ".")
         if inspect(image)["Architecture"] != arch:
-            raise RuntimeError(f"Wrong architecture: {image}")
+            raise RuntimeError(f"镜像架构不匹配：{image}")
     OUTPUT.mkdir(parents=True, exist_ok=True)
     name = f"micamera-net-{version}-linux-{arch}"
     with tempfile.TemporaryDirectory(prefix=".package-", dir=OUTPUT) as temporary:
@@ -55,7 +55,7 @@ def package(version, arch, reuse, build_args):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         compose, count = re.subn(r"    build:\n      context: \.\n      dockerfile: deployment/Dockerfile\.(?:bridge|web)\n", "", compose)
         if count != 2:
-            raise RuntimeError("Expected exactly two source build definitions.")
+            raise RuntimeError("应当恰好包含两个源码构建定义。")
         (directory / "docker-compose.yml").write_text(compose, encoding="utf-8", newline="\n")
         (directory / "deployment/package.env").write_text(
             f"PACKAGE_VERSION={version}\nPACKAGE_ARCH={arch}\nMICAMERA_BRIDGE_IMAGE={bridge}\n"
@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--build-arg", action="append", default=[], help="Explicit Docker build argument, NAME=VALUE.")
     arguments = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", arguments.version):
-        parser.error("Invalid version identifier.")
+        parser.error("版本标识无效。")
     for arch in (("amd64", "arm64") if arguments.arch == "all" else (arguments.arch,)):
         package(arguments.version, arch, arguments.reuse_images, arguments.build_arg)
 

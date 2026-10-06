@@ -1,4 +1,4 @@
-namespace MiCamera.Net.Abstractions.ConfigSettings;
+﻿namespace MiCamera.Net.Abstractions.ConfigSettings;
 
 /// <summary>One-time startup gate for hosts configured through the web UI.</summary>
 public sealed class ServerInitialization

@@ -2,7 +2,7 @@
 
 public sealed class MediaProcessingOptions
 {
-    public string NativeLibraryPath { get; set; } = string.Empty;
+    public string FFmpegLibPath { get; set; } = string.Empty;
 
     public string H264EncoderName { get; set; } = "libx264";
 

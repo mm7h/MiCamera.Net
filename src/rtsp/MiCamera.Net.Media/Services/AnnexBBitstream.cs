@@ -20,7 +20,7 @@ public static class AnnexBBitstream
 
             if (nextStart > nalStart)
             {
-                result.Add(annexB.Slice(nalStart, nextStart - nalStart));
+                result.Add(annexB[nalStart..nextStart]);
             }
 
             if (nextStart >= data.Length)
@@ -81,7 +81,7 @@ public static class AnnexBBitstream
 
     public static byte[] CombineWithStartCodes(IEnumerable<ReadOnlyMemory<byte>> nals)
     {
-        IReadOnlyList<ReadOnlyMemory<byte>> items = nals.Where(static nal => !nal.IsEmpty).ToArray();
+        IReadOnlyList<ReadOnlyMemory<byte>> items = [.. nals.Where(static nal => !nal.IsEmpty)];
         int length = items.Sum(static nal => nal.Length + 4);
         byte[] result = new byte[length];
         int offset = 0;

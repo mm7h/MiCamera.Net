@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Media.Services;
@@ -11,7 +11,7 @@ namespace MiCamera.Net.Media.Runtime;
 /// Owns one sequential FFmpeg decoder and optional H.264 encoder for a camera stream.
 /// FFmpeg contexts are deliberately never shared between stream workers.
 /// </summary>
-internal unsafe sealed class FFmpegFrameProcessor : IDisposable
+internal sealed unsafe class FFmpegFrameProcessor : IDisposable
 {
     /// <summary>AV_FRAME_FLAG_KEY from libavutil/frame.h, which these bindings do not expose.</summary>
     private const int KeyFrameFlag = 1 << 1;
@@ -58,9 +58,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
     private readonly Queue<long> _originOrder = new();
     private bool _disposed;
 
-    private readonly record struct SourceOrigin(long Sequence, uint Timestamp90Khz, uint Duration90Khz);
-
-    private static readonly ProcessResult Empty = new(null, []);
+    private static readonly ProcessResult s_empty = new(null, []);
 
     private FFmpegFrameProcessor(
         string streamId,
@@ -79,7 +77,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         AVCodec* codec = ffmpeg.avcodec_find_decoder(codecId);
         if (codec is null)
         {
-            throw new InvalidOperationException($"FFmpeg does not provide a decoder for {sourceCodec}.");
+            throw new InvalidOperationException($"FFmpeg 未提供 {sourceCodec} 解码器。");
         }
 
         this._decoder = ffmpeg.avcodec_alloc_context3(codec);
@@ -87,14 +85,14 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this._decodePacket = ffmpeg.av_packet_alloc();
         try
         {
-            EnsureAllocated(this._decoder, "decoder context");
-            EnsureAllocated(this._decodedFrame, "decoder frame");
-            EnsureAllocated(this._decodePacket, "decoder packet");
+            EnsureAllocated(this._decoder, "解码器上下文");
+            EnsureAllocated(this._decodedFrame, "解码帧");
+            EnsureAllocated(this._decodePacket, "解码数据包");
             // Slice threads alone leave a 4K HEVC decoder at roughly half the throughput of frame
             // threads on this class of CPU, so both modes are enabled and every core participates.
             this._decoder->thread_count = Math.Max(1, Environment.ProcessorCount);
             this._decoder->thread_type = ffmpeg.FF_THREAD_FRAME | ffmpeg.FF_THREAD_SLICE;
-            ThrowIfError(ffmpeg.avcodec_open2(this._decoder, codec, null), "open decoder");
+            ThrowIfError(ffmpeg.avcodec_open2(this._decoder, codec, null), "打开解码器");
         }
         catch
         {
@@ -117,7 +115,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
 
         if (!FFmpegRuntime.IsAvailable)
         {
-            error = FFmpegRuntime.Failure ?? new InvalidOperationException("FFmpeg native libraries are unavailable.");
+            error = FFmpegRuntime.Failure ?? new InvalidOperationException("FFmpeg 原生库不可用。");
             return false;
         }
 
@@ -165,17 +163,17 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         // frames, so submitting it would only burn CPU that the live encoders need.
         if (!transcode && !snapshot)
         {
-            return Empty;
+            return s_empty;
         }
 
         long packetTimestamp = this._timestamp90Khz;
         ffmpeg.av_packet_unref(this._decodePacket);
-        ThrowIfError(ffmpeg.av_new_packet(this._decodePacket, unit.AnnexB.Length), "allocate decode packet");
+        ThrowIfError(ffmpeg.av_new_packet(this._decodePacket, unit.AnnexB.Length), "分配解码数据包");
         unit.AnnexB.Span.CopyTo(new Span<byte>(this._decodePacket->data, unit.AnnexB.Length));
         this._decodePacket->pts = packetTimestamp;
         this._decodePacket->dts = packetTimestamp;
         this.QueueOrigin(packetTimestamp, unit);
-        ThrowIfError(ffmpeg.avcodec_send_packet(this._decoder, this._decodePacket), "decode video packet");
+        ThrowIfError(ffmpeg.avcodec_send_packet(this._decoder, this._decodePacket), "解码视频数据包");
 
         VideoSnapshot? jpeg = null;
         List<VideoAccessUnit> transcoded = [];
@@ -183,7 +181,9 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         // Frame threads delay output until more packets arrive. An idle screenshot has no
         // following packets to unlock it, so drain this independent key frame immediately.
         if (!transcode)
-            ThrowIfError(ffmpeg.avcodec_send_packet(this._decoder, null), "drain snapshot decoder");
+        {
+            ThrowIfError(ffmpeg.avcodec_send_packet(this._decoder, null), "排空快照解码器");
+        }
 
         while (ffmpeg.avcodec_receive_frame(this._decoder, this._decodedFrame) == 0)
         {
@@ -202,7 +202,11 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             }
         }
 
-        if (!transcode) this.FlushDecoder();
+        if (!transcode)
+        {
+            this.FlushDecoder();
+        }
+
         return new ProcessResult(jpeg, transcoded);
     }
 
@@ -260,7 +264,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this.CopyDecodedFrameTo(this._jpegFrame, this._jpegConverter, this._decodedFrame->pts);
 
         ffmpeg.av_packet_unref(this._jpegPacket);
-        ThrowIfError(ffmpeg.avcodec_send_frame(this._jpegEncoder, this._jpegFrame), "encode JPEG frame");
+        ThrowIfError(ffmpeg.avcodec_send_frame(this._jpegEncoder, this._jpegFrame), "编码 JPEG 帧");
         if (ffmpeg.avcodec_receive_packet(this._jpegEncoder, this._jpegPacket) != 0)
         {
             return null;
@@ -288,7 +292,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             // Native-resolution HEVC already has the encoder's pixel layout. Keep a reference
             // instead of copying every 4K frame through swscale; only our frame metadata changes.
             ffmpeg.av_frame_unref(this._h264Frame);
-            ThrowIfError(ffmpeg.av_frame_ref(this._h264Frame, this._decodedFrame), "reference H.264 input frame");
+            ThrowIfError(ffmpeg.av_frame_ref(this._h264Frame, this._decodedFrame), "引用 H.264 输入帧");
         }
         else
         {
@@ -297,7 +301,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this.ApplyKeyFrameRequest();
 
         ffmpeg.av_packet_unref(this._h264Packet);
-        ThrowIfError(ffmpeg.avcodec_send_frame(this._h264Encoder, this._h264Frame), "encode H.264 frame");
+        ThrowIfError(ffmpeg.avcodec_send_frame(this._h264Encoder, this._h264Frame), "编码 H.264 帧");
 
         List<VideoAccessUnit> result = [];
         while (ffmpeg.avcodec_receive_packet(this._h264Encoder, this._h264Packet) == 0)
@@ -398,7 +402,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
 
         if (this._decodedFrame->width <= 0 || this._decodedFrame->height <= 0)
         {
-            throw new InvalidOperationException("FFmpeg produced a frame without dimensions.");
+            throw new InvalidOperationException("FFmpeg 生成的帧缺少尺寸信息。");
         }
 
         if (this._jpegConverter is not null)
@@ -423,13 +427,13 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this._width = this._decodedFrame->width;
         this._height = this._decodedFrame->height;
         (this._h264Width, this._h264Height) = GetH264OutputSize(this._width, this._height, this._options);
-        this._jpegFrame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, "JPEG conversion frame");
-        this._jpegConverter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, ffmpeg.SWS_BILINEAR, "JPEG pixel converter");
+        this._jpegFrame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, "JPEG 转换帧");
+        this._jpegConverter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height, ffmpeg.SWS_BILINEAR, "JPEG 像素转换器");
 
         AVCodec* jpegCodec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_MJPEG);
-        EnsureAllocated(jpegCodec, "MJPEG encoder");
+        EnsureAllocated(jpegCodec, "MJPEG 编码器");
         this._jpegEncoder = ffmpeg.avcodec_alloc_context3(jpegCodec);
-        EnsureAllocated(this._jpegEncoder, "MJPEG encoder context");
+        EnsureAllocated(this._jpegEncoder, "MJPEG 编码器上下文");
         this.ConfigureVideoEncoder(this._jpegEncoder, AVPixelFormat.AV_PIX_FMT_YUVJ420P, this._width, this._height);
         // MJPEG supports slice threads: parallelize a 4K snapshot without frame-thread
         // buffering, which would delay the first snapshot until another key frame.
@@ -437,9 +441,9 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         this._jpegEncoder->thread_type = ffmpeg.FF_THREAD_SLICE;
         this._jpegEncoder->qmin = Math.Clamp(31 - (this._jpegQuality * 30 / 100), 1, 31);
         this._jpegEncoder->qmax = this._jpegEncoder->qmin;
-        ThrowIfError(ffmpeg.avcodec_open2(this._jpegEncoder, jpegCodec, null), "open MJPEG encoder");
+        ThrowIfError(ffmpeg.avcodec_open2(this._jpegEncoder, jpegCodec, null), "打开 MJPEG 编码器");
         this._jpegPacket = ffmpeg.av_packet_alloc();
-        EnsureAllocated(this._jpegPacket, "MJPEG packet");
+        EnsureAllocated(this._jpegPacket, "MJPEG 数据包");
     }
 
     private void EnsureH264Encoder()
@@ -455,11 +459,19 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
             codec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_H264);
         }
 
-        EnsureAllocated(codec, $"H.264 encoder '{this._options.H264EncoderName}'");
+        EnsureAllocated(codec, $"H.264 编码器“{this._options.H264EncoderName}”");
         this._h264Encoder = ffmpeg.avcodec_alloc_context3(codec);
-        EnsureAllocated(this._h264Encoder, "H.264 encoder context");
-        if (this._h264Frame is null) this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, "H.264 conversion frame");
-        if (this._h264Converter is null) this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, ffmpeg.SWS_FAST_BILINEAR, "H.264 pixel converter");
+        EnsureAllocated(this._h264Encoder, "H.264 编码器上下文");
+        if (this._h264Frame is null)
+        {
+            this._h264Frame = this.CreateConversionFrame(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, "H.264 转换帧");
+        }
+
+        if (this._h264Converter is null)
+        {
+            this._h264Converter = this.CreateConverter(AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height, ffmpeg.SWS_FAST_BILINEAR, "H.264 像素转换器");
+        }
+
         this.ConfigureVideoEncoder(this._h264Encoder, AVPixelFormat.AV_PIX_FMT_YUV420P, this._h264Width, this._h264Height);
         this._h264Encoder->thread_count = Math.Max(1, Environment.ProcessorCount);
         this._h264Encoder->bit_rate = this._options.H264Bitrate;
@@ -475,9 +487,9 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "annexb", "1", 0);
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "repeat-headers", "1", 0);
         _ = ffmpeg.av_opt_set(this._h264Encoder->priv_data, "forced-idr", "1", 0);
-        ThrowIfError(ffmpeg.avcodec_open2(this._h264Encoder, codec, null), "open H.264 encoder");
+        ThrowIfError(ffmpeg.avcodec_open2(this._h264Encoder, codec, null), "打开 H.264 编码器");
         this._h264Packet = ffmpeg.av_packet_alloc();
-        EnsureAllocated(this._h264Packet, "H.264 packet");
+        EnsureAllocated(this._h264Packet, "H.264 数据包");
     }
 
     private void ConfigureVideoEncoder(AVCodecContext* context, AVPixelFormat pixelFormat, int width, int height)
@@ -497,7 +509,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
         frame->format = (int)pixelFormat;
         frame->width = width;
         frame->height = height;
-        ThrowIfError(ffmpeg.av_frame_get_buffer(frame, 32), $"allocate {name}");
+        ThrowIfError(ffmpeg.av_frame_get_buffer(frame, 32), $"分配{name}");
         return frame;
     }
 
@@ -521,7 +533,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
 
     private void CopyDecodedFrameTo(AVFrame* target, SwsContext* converter, long timestamp90Khz)
     {
-        ThrowIfError(ffmpeg.av_frame_make_writable(target), "make conversion frame writable");
+        ThrowIfError(ffmpeg.av_frame_make_writable(target), "将转换帧设为可写");
         _ = ffmpeg.sws_scale(
             converter,
             this._decodedFrame->data,
@@ -558,7 +570,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
     {
         if (error < 0)
         {
-            throw new InvalidOperationException($"FFmpeg failed to {operation} (error {error}).");
+            throw new InvalidOperationException($"FFmpeg 操作失败：{operation}（错误码 {error}）。");
         }
     }
 
@@ -566,7 +578,7 @@ internal unsafe sealed class FFmpegFrameProcessor : IDisposable
     {
         if (pointer is null)
         {
-            throw new InvalidOperationException($"FFmpeg could not allocate {name}.");
+            throw new InvalidOperationException($"FFmpeg 无法分配{name}。");
         }
     }
 

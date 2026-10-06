@@ -1,4 +1,4 @@
-using MiCamera.Net.Server.Management;
+﻿using MiCamera.Net.Server.Management;
 
 namespace MiCamera.Net.Server;
 

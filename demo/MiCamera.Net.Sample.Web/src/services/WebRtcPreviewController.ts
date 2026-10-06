@@ -69,7 +69,7 @@ export class WebRtcPreviewController {
 
             this._sessionId = session.sessionId;
             if (session.offer.type !== "offer") {
-                throw new Error("服务端返回的 WebRTC 会话不是 offer。");
+                throw new Error("服务端返回的 WebRTC 会话类型不是提议。");
             }
 
             this.armTimeout(activePeer, generation, 30_000);
@@ -82,7 +82,7 @@ export class WebRtcPreviewController {
             }
 
             if (peer.localDescription.type !== "answer") {
-                throw new Error("浏览器未能生成有效的 WebRTC answer。");
+                throw new Error("浏览器未能生成有效的 WebRTC 会话应答。");
             }
 
             await this._apiClient.setAnswer(session.sessionId, {

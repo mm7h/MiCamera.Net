@@ -1,4 +1,4 @@
-using MiCamera.Net.Abstractions.Common.Enums;
+﻿using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Abstractions.ConfigSettings;
 using MiCamera.Net.Abstractions.Streams;
 using MiCamera.Net.Media.Runtime;
@@ -23,7 +23,7 @@ public sealed class HealthController(ICameraStreamProvider source, IVideoSnapsho
     public IActionResult Ready()
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        StreamHealthResponse[] streams = source.Streams.Select(stream =>
+        StreamHealthResponse[] streams = [.. source.Streams.Select(stream =>
         {
             source.TryGetSnapshot(stream.StreamId, out var state);
             bool receiving = state?.State == CameraStreamState.Streaming && state.LastReceivedAt is { } received &&
@@ -32,7 +32,7 @@ public sealed class HealthController(ICameraStreamProvider source, IVideoSnapsho
                 now - frame.CapturedAt <= server.Streaming.FirstKeyFrameTimeout;
             return new StreamHealthResponse(stream.StreamId, state?.State.ToString() ?? "Unknown", state?.LastReceivedAt,
                 receiving, snapshot, options.WebRtc.Enabled && media.CanProvide(stream.StreamId, VideoCodec.H264, out _));
-        }).ToArray();
+        })];
         bool native = MediaRuntimeDiagnostics.Current.FullyAvailable;
         bool mediaReady = streams.Length > 0 && native && streams.All(stream => stream.Receiving &&
             (!options.Snapshot.Enabled || stream.SnapshotAvailable) && (!options.WebRtc.Enabled || stream.WebRtcAvailable));

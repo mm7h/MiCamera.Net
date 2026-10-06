@@ -11,7 +11,7 @@ internal static class RtpPacketizer
         int maxPayload = mtu - 12;
         if (maxPayload < 256)
         {
-            throw new ArgumentOutOfRangeException(nameof(mtu), "RTP MTU must allow at least 256 bytes of payload.");
+            throw new ArgumentOutOfRangeException(nameof(mtu), "RTP MTU 必须能够容纳至少 256 字节的有效载荷。");
         }
 
         IReadOnlyList<ReadOnlyMemory<byte>> nals = AnnexBBitstream.SplitNalUnits(unit.AnnexB);

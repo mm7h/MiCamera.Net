@@ -37,6 +37,8 @@ class FakeMiloco(http.server.BaseHTTPRequestHandler):
     authorized = True
     malformed = False
     empty = False
+    camera_code = 0
+    invalid_did = False
     camera_requests = 0
     codec = "H265"
     frames = {}
@@ -44,8 +46,8 @@ class FakeMiloco(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def reply(self, data, status=200, cookie=False):
-        payload = json.dumps({"code": 0, "data": data}).encode()
+    def reply(self, data, status=200, cookie=False, code=0):
+        payload = json.dumps({"code": code, "data": data}).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -68,8 +70,8 @@ class FakeMiloco(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/miot/camera_list":
             type(self).camera_requests += 1
             self.reply({} if self.malformed else [] if self.empty else [
-                {"did": "123456", "name": "Living room", "room_name": "Living room", "online": True, "channel_count": 2},
-                {"did": "654321", "name": "Door", "online": False, "channel_count": None}])
+                {"did": "" if self.invalid_did else "123456", "name": "Living room", "room_name": "Living room", "online": True, "channel_count": 2},
+                {"did": "654321", "name": "Door", "online": False, "channel_count": None}], code=self.camera_code)
         elif self.path.startswith("/api/miot/ws/video_stream") and self.frames:
             type(self).websocket_requests.append(self.path)
             accept = base64.b64encode(hashlib.sha1((self.headers["Sec-WebSocket-Key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
@@ -105,7 +107,7 @@ class Fixture:
         self.media = media
         native = Path(os.environ.get("FFMPEG_NATIVE_DIR", str(ROOT / "demo/MiCamera.Net.Sample.Server/bin/Debug/net8.0/ffmpeg")))
         if media:
-            assert native.is_dir(), "Set FFMPEG_NATIVE_DIR to the FFmpeg 7.1 native library directory"
+            assert native.is_dir(), "请将 FFMPEG_NATIVE_DIR 设为 FFmpeg 7.1 原生库目录。"
             for codec, encoder, format_name, extra in (("H265", "libx265", "hevc", ["-x265-params", "aud=1:keyint=10:repeat-headers=1:log-level=error"]),
                     ("H264", "libx264", "h264", ["-x264-params", "aud=1:keyint=10:repeat-headers=1"])):
                 result = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=128x96:rate=5",
@@ -147,14 +149,14 @@ class Fixture:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                raise AssertionError("Backend exited: " + (self.directory / "server.log").read_text(encoding="utf-8"))
+                raise AssertionError("后端已退出：" + (self.directory / "server.log").read_text(encoding="utf-8"))
             try:
                 if self.call("/api/health/live")[0] == 200:
                     return
             except OSError:
                 pass
             time.sleep(.1)
-        raise AssertionError("Backend did not start")
+        raise AssertionError("后端未能启动。")
 
     def stop(self):
         if self.process and self.process.poll() is None:
@@ -223,10 +225,19 @@ def verify(fixture):
     FakeMiloco.malformed = True
     assert fixture.call("/api/setup/discover", connection)[0] == 502
     FakeMiloco.malformed = False
+    for code in (1, None):
+        FakeMiloco.camera_code = code
+        assert fixture.call("/api/setup/discover", connection)[0] == 502
+    FakeMiloco.camera_code = 0
+    FakeMiloco.invalid_did = True
+    assert fixture.call("/api/setup/discover", connection)[0] == 502
+    FakeMiloco.invalid_did = False
     FakeMiloco.empty = True
     assert fixture.call("/api/setup/discover", connection)[1] == []
     FakeMiloco.empty = False
     devices = fixture.call("/api/setup/discover", connection)[1]
+    assert devices[0] == {"did": "123456", "name": "Living room", "roomName": "Living room", "online": True, "channelCount": 2}
+    assert devices[1]["roomName"] is None and devices[1]["online"] is False
     assert devices[0]["channelCount"] == 2 and devices[1]["channelCount"] is None
     assert fixture.call("/api/setup")[1]["configured"] is False  # Discovery never commits settings.
     stream = {"streamId": "front", "cameraDeviceId": "123456", "channel": 0, "codec": "H265", "nominalFrameRate": 25}
@@ -374,7 +385,7 @@ def verify_media(fixture, stream_id):
             break
         time.sleep(.2)
     else:
-        raise AssertionError("Media did not become available: " + str(cameras))
+        raise AssertionError("媒体服务未能就绪：" + str(cameras))
     request = urllib.request.Request(fixture.base + f"/api/cameras/{stream_id}/snapshot", headers={"Authorization": "Bearer " + TOKEN})
     with urllib.request.urlopen(request) as response:
         assert response.headers["Content-Type"].startswith("image/jpeg") and response.read().startswith(b"\xff\xd8")
@@ -389,13 +400,13 @@ if __name__ == "__main__":
     fixture = Fixture(web="--serve" in sys.argv, media="--media" in sys.argv, debug="--debug" in sys.argv)
     try:
         if "--serve" in sys.argv:
-            print(f"UI fixture: API={fixture.base} Miloco={fixture.miloco} PIN={PIN} Token={TOKEN}", flush=True)
+            print(f"界面验证环境：API={fixture.base} Miloco={fixture.miloco} PIN={PIN} 令牌={TOKEN}", flush=True)
             while True:
                 time.sleep(1)
         else:
             verify(fixture)
             verify_deployment()
-            print("PASS: setup, discovery, Swagger, hot reload without process restart, session cleanup, Digest, SQLite atomicity, concurrency, persistence and deployment configuration" + (" (Debug)" if "--debug" in sys.argv else " (Release)"))
+            print("验证通过：配置向导、设备发现、Swagger、无进程重启的配置热更新、会话清理、摘要认证、SQLite 原子性、并发、持久化及部署配置" + (" (Debug)" if "--debug" in sys.argv else " (Release)"))
     except Exception:
         print((fixture.directory / "server.log").read_text(encoding="utf-8")[-12000:], file=sys.stderr)
         raise

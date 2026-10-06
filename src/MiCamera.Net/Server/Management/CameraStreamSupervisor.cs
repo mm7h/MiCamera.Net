@@ -15,39 +15,36 @@ namespace MiCamera.Net.Server.Management;
 /// <summary>
 /// Runs an independent authenticated WebSocket stream loop for every configured camera channel.
 /// </summary>
-internal sealed class CameraStreamSupervisor : BackgroundService
+internal sealed class CameraStreamSupervisor(
+    MiCameraServerOptions options,
+    MilocoSessionClient session,
+    MilocoWebSocketClientFactory webSocketFactory,
+    CameraStreamHub streamHub,
+    ILogger<CameraStreamSupervisor> logger) : BackgroundService
 {
-    private readonly MiCameraServerOptions _options;
-    private readonly MilocoSessionClient _session;
-    private readonly MilocoWebSocketClientFactory _webSocketFactory;
-    private readonly CameraStreamHub _streamHub;
-    private readonly ILogger<CameraStreamSupervisor> _logger;
+    private readonly MiCameraServerOptions _options = options;
+    private readonly MilocoSessionClient _session = session;
+    private readonly MilocoWebSocketClientFactory _webSocketFactory = webSocketFactory;
+    private readonly CameraStreamHub _streamHub = streamHub;
+    private readonly ILogger<CameraStreamSupervisor> _logger = logger;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private CancellationToken _hostToken;
     private CancellationTokenSource? _generation;
     private Task _workers = Task.CompletedTask;
     private bool _suspended;
 
-    public CameraStreamSupervisor(
-        MiCameraServerOptions options,
-        MilocoSessionClient session,
-        MilocoWebSocketClientFactory webSocketFactory,
-        CameraStreamHub streamHub,
-        ILogger<CameraStreamSupervisor> logger)
-    {
-        this._options = options;
-        this._session = session;
-        this._webSocketFactory = webSocketFactory;
-        this._streamHub = streamHub;
-        this._logger = logger;
-    }
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         this._hostToken = stoppingToken;
         await this._options.Initialization.WaitAsync(stoppingToken).ConfigureAwait(false);
         await this._lifecycleLock.WaitAsync(stoppingToken).ConfigureAwait(false);
-        try { if (!this._suspended) this.StartWorkers(); }
+        try
+        {
+            if (!this._suspended)
+            {
+                this.StartWorkers();
+            }
+        }
         finally { this._lifecycleLock.Release(); }
         try { await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false); }
         finally { await this.SuspendAsync().ConfigureAwait(false); }
@@ -84,7 +81,11 @@ internal sealed class CameraStreamSupervisor : BackgroundService
 
     private void StartWorkers()
     {
-        if (this._generation is not null) return;
+        if (this._generation is not null)
+        {
+            return;
+        }
+
         this._generation = CancellationTokenSource.CreateLinkedTokenSource(this._hostToken);
         CancellationToken token = this._generation.Token;
         this._workers = Task.WhenAll(this._options.Streams
@@ -123,7 +124,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
                 TimeSpan delay = this.GetReconnectDelay(failureCount);
                 this._logger.LogWarning(
                     exception,
-                    "Camera stream {StreamId} disconnected. Reconnecting in {ReconnectDelay}.",
+                    "摄像头流 {StreamId} 已断开，将在 {ReconnectDelay} 后重新连接。",
                     stream.StreamId,
                     delay);
 
@@ -166,7 +167,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
             if (message.MessageType == WebSocketMessageType.Text)
             {
                 completion.TrySetException(new InvalidOperationException(
-                    "Miloco sent an unexpected text message; its contents have been suppressed."));
+                    "Miloco 发送了非预期的文本消息，消息内容已隐藏。"));
                 return;
             }
 
@@ -178,7 +179,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
             if (data.Length > this._options.Streaming.MaxMessageBytes)
             {
                 completion.TrySetException(new InvalidOperationException(
-                    $"Miloco sent a {data.Length}-byte message, exceeding the configured limit."));
+                    $"Miloco 发送的消息长达 {data.Length} 字节，超出配置的大小限制。"));
                 return;
             }
 
@@ -195,7 +196,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         {
             info.CancelReconnection = true;
             Exception exception = info.Exception ?? new WebSocketException(
-                $"Miloco WebSocket closed: {info.CloseStatus}");
+                $"Miloco WebSocket 已关闭：{info.CloseStatus}。");
             completion.TrySetException(exception);
         });
 
@@ -229,7 +230,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
             }
 
             await finishedTask.ConfigureAwait(false);
-            throw new InvalidOperationException("The Miloco stream ended unexpectedly.");
+            throw new InvalidOperationException("Miloco 视频流意外结束。");
         }
         finally
         {
@@ -241,12 +242,12 @@ internal sealed class CameraStreamSupervisor : BackgroundService
             {
                 try
                 {
-                    await client.StopOrFail(WebSocketCloseStatus.NormalClosure, "MiCamera stream reconnecting")
+                    await client.StopOrFail(WebSocketCloseStatus.NormalClosure, "MiCamera 视频流正在重新连接")
                         .ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {
-                    this._logger.LogDebug(exception, "The Miloco WebSocket for {StreamId} did not close cleanly.", stream.StreamId);
+                    this._logger.LogDebug(exception, "摄像头流 {StreamId} 的 Miloco WebSocket 未能正常关闭。", stream.StreamId);
                 }
             }
 
@@ -274,7 +275,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
                 this._streamHub.ResetSubscribersForKeyFrame(stream.StreamId);
                 this._streamHub.SetState(stream.StreamId, CameraStreamState.WaitingForKeyFrame);
                 this._logger.LogWarning(
-                    "Input processing for camera stream {StreamId} fell behind. Waiting for the next key frame.",
+                    "摄像头流 {StreamId} 的输入处理滞后，正在等待下一个关键帧。",
                     stream.StreamId);
             }
 
@@ -334,12 +335,12 @@ internal sealed class CameraStreamSupervisor : BackgroundService
 
             if (!hasPublishedKeyFrame() && now - startedAt >= this._options.Streaming.FirstKeyFrameTimeout)
             {
-                throw new TimeoutException($"Miloco stream '{streamId}' did not provide a key frame in time.");
+                throw new TimeoutException($"Miloco 视频流“{streamId}”未能在规定时间内提供关键帧。");
             }
 
             if (now - lastMessageUtc() >= this._options.Streaming.IdleTimeout)
             {
-                throw new TimeoutException($"Miloco stream '{streamId}' did not provide data in time.");
+                throw new TimeoutException($"Miloco 视频流“{streamId}”未能在规定时间内提供数据。");
             }
         }
     }
@@ -369,7 +370,7 @@ internal sealed class CameraStreamSupervisor : BackgroundService
         milliseconds = Math.Min(milliseconds, this._options.Reconnect.MaximumDelay.TotalMilliseconds);
 
         double jitterRange = this._options.Reconnect.JitterRatio;
-        double jitter = 1d + ((Random.Shared.NextDouble() * 2d - 1d) * jitterRange);
+        double jitter = 1d + (((Random.Shared.NextDouble() * 2d) - 1d) * jitterRange);
         return TimeSpan.FromMilliseconds(Math.Max(1d, milliseconds * jitter));
     }
 

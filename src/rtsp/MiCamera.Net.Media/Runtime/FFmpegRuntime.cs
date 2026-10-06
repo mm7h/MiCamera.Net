@@ -7,26 +7,28 @@ internal static class FFmpegRuntime
 {
     private static int s_configured;
     private static bool s_isAvailable;
-    private static Exception? s_failure;
     private static readonly object s_sync = new();
 
-    public static MediaRuntimeReport Report { get; private set; } = new(false, false, false, false, false, "Native runtime has not been initialized.");
+    public static MediaRuntimeReport Report { get; private set; } = new(false, false, false, false, false, "原生运行时尚未初始化。");
 
     public static bool IsAvailable => Volatile.Read(ref s_configured) == 1 && s_isAvailable;
 
-    public static Exception? Failure => s_failure;
+    public static Exception? Failure { get; private set; }
 
     public static void Configure(MediaProcessingOptions options)
     {
         lock (s_sync)
         {
-            if (s_configured == 1) return;
+            if (s_configured == 1)
+            {
+                return;
+            }
 
             try
             {
-                if (!string.IsNullOrWhiteSpace(options.NativeLibraryPath))
+                if (!string.IsNullOrWhiteSpace(options.FFmpegLibPath))
                 {
-                    ffmpeg.RootPath = options.NativeLibraryPath;
+                    ffmpeg.RootPath = options.FFmpegLibPath;
                 }
 
                 _ = ffmpeg.av_version_info();
@@ -35,7 +37,7 @@ internal static class FFmpegRuntime
                     (ffmpeg.avutil_version() >> 16) != ffmpeg.LIBAVUTIL_VERSION_MAJOR ||
                     (ffmpeg.swscale_version() >> 16) != ffmpeg.LIBSWSCALE_VERSION_MAJOR)
                 {
-                    throw new InvalidOperationException("FFmpeg native ABI does not match the locked FFmpeg.AutoGen bindings.");
+                    throw new InvalidOperationException("FFmpeg 原生库 ABI 与锁定版本的 FFmpeg.AutoGen 绑定不匹配。");
                 }
 
                 unsafe
@@ -52,9 +54,9 @@ internal static class FFmpegRuntime
             }
             catch (Exception exception)
             {
-                s_failure = exception;
+                Failure = exception;
                 s_isAvailable = false;
-                Report = new(false, false, false, false, false, $"Native runtime unavailable ({exception.GetType().Name}).");
+                Report = new(false, false, false, false, false, $"原生运行时不可用（{exception.GetType().Name}）。");
             }
 
             Volatile.Write(ref s_configured, 1);

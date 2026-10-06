@@ -34,12 +34,12 @@ internal sealed class ServerBuilder : IMiCameraServerBuilder
 
         if (this._built)
         {
-            throw new InvalidOperationException("The MiCamera server builder has already built a host.");
+            throw new InvalidOperationException("MiCamera 服务构建器已创建宿主。");
         }
 
         if (this._initialized)
         {
-            throw new InvalidOperationException("The MiCamera server builder can only be initialized once.");
+            throw new InvalidOperationException("MiCamera 服务构建器只能初始化一次。");
         }
 
         MiCameraOptionsValidator.Validate(options);
@@ -50,7 +50,7 @@ internal sealed class ServerBuilder : IMiCameraServerBuilder
             {
                 services.AddSingleton(options);
             })
-            .RegisterMiCameraCore(options);
+            .RegisterMiCameraCore();
 
         return this;
     }
@@ -59,12 +59,12 @@ internal sealed class ServerBuilder : IMiCameraServerBuilder
     {
         if (!this._initialized)
         {
-            throw new InvalidOperationException("Initialize must be called before Build.");
+            throw new InvalidOperationException("调用 Build 之前必须先调用 Initialize。");
         }
 
         if (this._built)
         {
-            throw new InvalidOperationException("The MiCamera server builder can only build one host.");
+            throw new InvalidOperationException("MiCamera 服务构建器只能创建一个宿主。");
         }
 
         this._built = true;

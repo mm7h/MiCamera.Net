@@ -1,13 +1,13 @@
 ﻿using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Net;
 using System.Diagnostics;
+using System.Net;
+using System.Security.Cryptography;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.Abstractions.Streams;
+using MiCamera.Net.Media.Services;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
 using MiCamera.Net.RTSP.Abstractions.Web;
-using MiCamera.Net.Media.Services;
 using MiCamera.Net.RTSP.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -21,13 +21,18 @@ namespace MiCamera.Net.RTSP.Services;
 /// <summary>
 /// Owns WebRTC peer connection state and keeps controller actions free of signaling and media lifecycle logic.
 /// </summary>
-public sealed class WebRtcSessionService : IDisposable
+public sealed class WebRtcSessionService(
+    ICameraStreamProvider streams,
+    INormalizedVideoStreamProvider media,
+    IMediaCapabilityProvider mediaCapabilities,
+    MiCameraRtspOptions options,
+    ILogger<WebRtcSessionService> logger) : IDisposable
 {
-    private readonly ICameraStreamProvider _streams;
-    private readonly INormalizedVideoStreamProvider _media;
-    private readonly IMediaCapabilityProvider _mediaCapabilities;
-    private readonly MiCameraRtspOptions _options;
-    private readonly ILogger<WebRtcSessionService> _logger;
+    private readonly ICameraStreamProvider _streams = streams;
+    private readonly INormalizedVideoStreamProvider _media = media;
+    private readonly IMediaCapabilityProvider _mediaCapabilities = mediaCapabilities;
+    private readonly MiCameraRtspOptions _options = options;
+    private readonly ILogger<WebRtcSessionService> _logger = logger;
     private readonly ConcurrentDictionary<string, WebRtcSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _peerSlots = new(StringComparer.OrdinalIgnoreCase);
     private bool _disposed;
@@ -37,28 +42,22 @@ public sealed class WebRtcSessionService : IDisposable
     private int _activeCreations;
     private bool _paused;
 
-    public WebRtcSessionService(
-        ICameraStreamProvider streams,
-        INormalizedVideoStreamProvider media,
-        IMediaCapabilityProvider mediaCapabilities,
-        MiCameraRtspOptions options,
-        ILogger<WebRtcSessionService> logger)
-    {
-        this._streams = streams;
-        this._media = media;
-        this._mediaCapabilities = mediaCapabilities;
-        this._options = options;
-        this._logger = logger;
-    }
-
     public async Task<IActionResult> CreateAsync(CreateWebRtcSessionRequest request, CancellationToken cancellationToken)
     {
         CancellationTokenSource linked;
         lock (this._lifecycleLock)
         {
-            if (this._paused || this._disposed) return ServiceUnavailable("Configuration is being applied. Please reconnect shortly.");
+            if (this._paused || this._disposed)
+            {
+                return ServiceUnavailable("正在应用配置，请稍后重新连接。");
+            }
+
             linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this._creationCancellation.Token);
-            if (this._activeCreations == 0) this._creationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (this._activeCreations == 0)
+            {
+                this._creationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
             this._activeCreations++;
         }
         try { return await this.CreateCoreAsync(request, linked.Token).ConfigureAwait(false); }
@@ -67,7 +66,10 @@ public sealed class WebRtcSessionService : IDisposable
             linked.Dispose();
             lock (this._lifecycleLock)
             {
-                if (--this._activeCreations == 0) this._creationsDrained.TrySetResult();
+                if (--this._activeCreations == 0)
+                {
+                    this._creationsDrained.TrySetResult();
+                }
             }
         }
     }
@@ -78,12 +80,19 @@ public sealed class WebRtcSessionService : IDisposable
         lock (this._lifecycleLock)
         {
             this._paused = true;
-            if (this._activeCreations == 0) this._creationsDrained.TrySetResult();
+            if (this._activeCreations == 0)
+            {
+                this._creationsDrained.TrySetResult();
+            }
+
             drained = this._creationsDrained.Task;
         }
         this._creationCancellation.Cancel();
         await drained.ConfigureAwait(false);
-        foreach (string id in this._sessions.Keys) this.Delete(id);
+        foreach (string id in this._sessions.Keys)
+        {
+            this.Delete(id);
+        }
     }
 
     public void Resume()
@@ -101,24 +110,24 @@ public sealed class WebRtcSessionService : IDisposable
     {
         if (!this._options.WebRtc.Enabled)
         {
-            return ServiceUnavailable("WebRTC is disabled.");
+            return ServiceUnavailable("WebRTC 已禁用。");
         }
 
         if (request is null || string.IsNullOrWhiteSpace(request.StreamId) ||
             !this._streams.Streams.Any(stream => string.Equals(stream.StreamId, request.StreamId, StringComparison.OrdinalIgnoreCase)))
         {
-            return new NotFoundObjectResult(new { error = "The camera stream was not found." });
+            return new NotFoundObjectResult(new { error = "未找到摄像头流。" });
         }
 
         if (!this._mediaCapabilities.CanProvide(request.StreamId, VideoCodec.H264, out string? unavailableReason))
         {
-            return ServiceUnavailable(unavailableReason ?? "H.264 output is unavailable for this camera stream.");
+            return ServiceUnavailable(unavailableReason ?? "此摄像头流的 H.264 输出不可用。");
         }
 
         SemaphoreSlim slots = this._peerSlots.GetOrAdd(request.StreamId, _ => new SemaphoreSlim(this._options.WebRtc.MaxPeersPerStream));
         if (!slots.Wait(0))
         {
-            return new ObjectResult(new { error = "The WebRTC peer limit for this camera stream has been reached." })
+            return new ObjectResult(new { error = "此摄像头流的 WebRTC 连接数已达到上限。" })
             {
                 StatusCode = StatusCodes.Status429TooManyRequests
             };
@@ -135,7 +144,7 @@ public sealed class WebRtcSessionService : IDisposable
         catch (Exception)
         {
             slots.Release();
-            return ServiceUnavailable("WebRTC UDP socket allocation failed. Check the bind address and available UDP port range.");
+            return ServiceUnavailable("无法分配 WebRTC UDP 套接字，请检查绑定地址和可用的 UDP 端口范围。");
         }
 
         long lastRecovery = 0;
@@ -143,18 +152,28 @@ public sealed class WebRtcSessionService : IDisposable
         {
             lock (this._lifecycleLock)
             {
-                if (this._paused || this._disposed) return;
+                if (this._paused || this._disposed)
+                {
+                    return;
+                }
+
                 long now = Environment.TickCount64;
                 long previous = Interlocked.Read(ref lastRecovery);
                 if (now - previous >= 500 && Interlocked.CompareExchange(ref lastRecovery, now, previous) == previous)
+                {
                     this._media.RequestKeyFrame(request.StreamId);
+                }
             }
         }
         WebRtcSession session = new(id, request.StreamId, peer, RequestRecovery, () => slots.Release());
         peer.onconnectionstatechange += state => this.HandleConnectionStateChanged(session, state);
         peer.OnReceiveReport += (_, media, report) =>
         {
-            if (media != SDPMediaTypesEnum.video || report.Feedback is not { } feedback) return;
+            if (media != SDPMediaTypesEnum.video || report.Feedback is not { } feedback)
+            {
+                return;
+            }
+
             if (feedback.Header.PacketType == RTCPReportTypesEnum.PSFB &&
                 feedback.Header.PayloadFeedbackMessageType is PSFBFeedbackTypesEnum.PLI or PSFBFeedbackTypesEnum.FIR)
             {
@@ -174,22 +193,24 @@ public sealed class WebRtcSessionService : IDisposable
         iceChannel.OnStunMessageSent += (_, _, _) => Interlocked.Increment(ref stunSent);
         peer.oniceconnectionstatechange += state =>
             this._logger.LogInformation(
-                "WebRTC ICE state for {StreamId} changed to {State}; stunIn={StunIn}, stunOut={StunOut}, stunIdle={StunIdleMs} ms.",
+                "摄像头流 {StreamId} 的 WebRTC ICE 状态已变为 {State}；收到 STUN 消息数={StunIn}，发送 STUN 消息数={StunOut}，STUN 接收闲置时间={StunIdleMs} 毫秒。",
                 request.StreamId, state, Interlocked.Read(ref stunReceived), Interlocked.Read(ref stunSent),
                 Environment.TickCount64 - Interlocked.Read(ref lastStunReceivedTicks));
         peer.onicecandidateerror += (candidate, error) =>
-            this._logger.LogWarning("WebRTC ICE candidate error for {StreamId}: {Error}.", request.StreamId, error);
+            this._logger.LogWarning("摄像头流 {StreamId} 的 WebRTC ICE 候选地址发生错误：{Error}。", request.StreamId, error);
         peer.OnTimeout += media =>
         {
-            this._logger.LogWarning("WebRTC media timeout for {StreamId} on {Media}.", request.StreamId, media);
+            this._logger.LogWarning("摄像头流 {StreamId} 的 WebRTC {Media} 媒体已超时。", request.StreamId, media);
             if (media == SDPMediaTypesEnum.video && session.HasConnected &&
                 this._sessions.TryRemove(session.Id, out WebRtcSession? expired))
+            {
                 expired.Dispose();
+            }
         };
         peer.OnRtcpBye += reason =>
-            this._logger.LogInformation("WebRTC RTCP BYE for {StreamId}: {Reason}.", request.StreamId, string.IsNullOrWhiteSpace(reason) ? "<none>" : reason);
+            this._logger.LogInformation("摄像头流 {StreamId} 收到 WebRTC RTCP 结束通知：{Reason}。", request.StreamId, string.IsNullOrWhiteSpace(reason) ? "<无>" : reason);
         peer.OnRtpClosed += reason =>
-            this._logger.LogWarning("WebRTC RTP channel closed for {StreamId}: {Reason}.", request.StreamId, string.IsNullOrWhiteSpace(reason) ? "<none>" : reason);
+            this._logger.LogWarning("摄像头流 {StreamId} 的 WebRTC RTP 通道已关闭：{Reason}。", request.StreamId, string.IsNullOrWhiteSpace(reason) ? "<无>" : reason);
 
         try
         {
@@ -200,7 +221,7 @@ public sealed class WebRtcSessionService : IDisposable
                     parameters is null || !TryReadH264Profile(parameters, out profile))
                 {
                     session.Dispose();
-                    return ServiceUnavailable("H.264 SPS parameters are not available yet. Wait for a camera key frame.");
+                    return ServiceUnavailable("尚未获取到 H.264 SPS 参数，请等待摄像头关键帧。");
                 }
             }
             else
@@ -216,7 +237,7 @@ public sealed class WebRtcSessionService : IDisposable
                 }
                 if (!found)
                 {
-                    throw new InvalidOperationException("Transcoder produced no H.264 SPS.");
+                    throw new InvalidOperationException("转码器未生成 H.264 SPS 参数。");
                 }
             }
 
@@ -233,7 +254,7 @@ public sealed class WebRtcSessionService : IDisposable
             if (!this._sessions.TryAdd(id, session))
             {
                 session.Dispose();
-                return ServiceUnavailable("Unable to create the WebRTC session.");
+                return ServiceUnavailable("无法创建 WebRTC 会话。");
             }
 
             WebRtcSessionOfferResponse response = new(
@@ -246,8 +267,8 @@ public sealed class WebRtcSessionService : IDisposable
         {
             this._sessions.TryRemove(id, out _);
             session.Dispose();
-            this._logger.LogWarning(exception, "Unable to create WebRTC offer for camera stream {StreamId}.", request.StreamId);
-            return ServiceUnavailable("Unable to create a WebRTC offer for this camera stream.");
+            this._logger.LogWarning(exception, "无法为摄像头流 {StreamId} 创建 WebRTC 会话提议。", request.StreamId);
+            return ServiceUnavailable("无法为此摄像头流创建 WebRTC 会话提议。");
         }
     }
 
@@ -255,12 +276,12 @@ public sealed class WebRtcSessionService : IDisposable
     {
         if (!this._sessions.TryGetValue(sessionId, out WebRtcSession? session))
         {
-            return new NotFoundObjectResult(new { error = "The WebRTC session was not found." });
+            return new NotFoundObjectResult(new { error = "未找到 WebRTC 会话。" });
         }
 
         if (!string.Equals(answer.Type, "answer", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(answer.Sdp))
         {
-            return new BadRequestObjectResult(new { error = "An SDP answer is required." });
+            return new BadRequestObjectResult(new { error = "必须提供 SDP 会话应答。" });
         }
 
         SetDescriptionResultEnum result = session.Peer.setRemoteDescription(new RTCSessionDescriptionInit
@@ -270,7 +291,7 @@ public sealed class WebRtcSessionService : IDisposable
         });
         if (result != SetDescriptionResultEnum.OK)
         {
-            return new BadRequestObjectResult(new { error = $"The SDP answer is incompatible: {result}." });
+            return new BadRequestObjectResult(new { error = $"SDP 会话应答不兼容：{result}。" });
         }
 
         session.HasAnswer = true;
@@ -281,12 +302,12 @@ public sealed class WebRtcSessionService : IDisposable
     {
         if (!this._sessions.TryGetValue(sessionId, out WebRtcSession? session))
         {
-            return new NotFoundObjectResult(new { error = "The WebRTC session was not found." });
+            return new NotFoundObjectResult(new { error = "未找到 WebRTC 会话。" });
         }
 
         if (string.IsNullOrWhiteSpace(candidate.Candidate))
         {
-            return new BadRequestObjectResult(new { error = "An ICE candidate is required." });
+            return new BadRequestObjectResult(new { error = "必须提供 ICE 候选地址。" });
         }
 
         session.Peer.addIceCandidate(new RTCIceCandidateInit
@@ -303,7 +324,7 @@ public sealed class WebRtcSessionService : IDisposable
     {
         if (!this._sessions.TryRemove(sessionId, out WebRtcSession? session))
         {
-            return new NotFoundObjectResult(new { error = "The WebRTC session was not found." });
+            return new NotFoundObjectResult(new { error = "未找到 WebRTC 会话。" });
         }
 
         session.Dispose();
@@ -320,7 +341,7 @@ public sealed class WebRtcSessionService : IDisposable
             {
                 if (this._sessions.TryRemove(pair.Key, out WebRtcSession? removed))
                 {
-                    this._logger.LogInformation("Removing expired WebRTC session for {StreamId}; connected={Connected}, disconnectedAt={DisconnectedAt}.",
+                    this._logger.LogInformation("正在移除摄像头流 {StreamId} 的过期 WebRTC 会话；曾连接={Connected}，断开时间={DisconnectedAt}。",
                         session.StreamId, session.HasConnected, session.DisconnectedAt);
                     removed.Dispose();
                 }
@@ -348,15 +369,14 @@ public sealed class WebRtcSessionService : IDisposable
     {
         return new RTCConfiguration
         {
-            iceServers = this._options.WebRtc.IceServers
+            iceServers = [.. this._options.WebRtc.IceServers
                 .Where(server => !string.IsNullOrWhiteSpace(server.Url))
                 .Select(server => new RTCIceServer
                 {
                     urls = server.Url,
                     username = server.Username,
                     credential = server.Credential
-                })
-                .ToList(),
+                })],
             X_GatherTimeoutMs = (int)this._options.WebRtc.IceGatheringTimeout.TotalMilliseconds,
             X_BindAddress = this._options.WebRtc.BindAddress is { } address ? IPAddress.Parse(address) : null
         };
@@ -364,9 +384,12 @@ public sealed class WebRtcSessionService : IDisposable
 
     private void HandleConnectionStateChanged(WebRtcSession session, RTCPeerConnectionState state)
     {
-        this._logger.LogInformation("WebRTC connection for {StreamId} changed to {State}.", session.StreamId, state);
+        this._logger.LogInformation("摄像头流 {StreamId} 的 WebRTC 连接状态已变为 {State}。", session.StreamId, state);
         if (state == RTCPeerConnectionState.closed)
-            this._logger.LogInformation("WebRTC {StreamId} retransmitted {Packets} packets.", session.StreamId, session.RetransmittedPackets);
+        {
+            this._logger.LogInformation("摄像头流 {StreamId} 的 WebRTC 已重传 {Packets} 个数据包。", session.StreamId, session.RetransmittedPackets);
+        }
+
         switch (state)
         {
             case RTCPeerConnectionState.connected:
@@ -438,7 +461,10 @@ public sealed class WebRtcSessionService : IDisposable
                     // dozens of packets; a single burst stresses downstream receive queues even
                     // on a wired LAN. Leave room for reception and NACK repairs between bursts.
                     if (index > 0 && index % burstSize == 0)
+                    {
                         await Task.Delay(1, session.Cancellation.Token).ConfigureAwait(false);
+                    }
+
                     session.SendVideoPacket(framePackets[index]);
                     packets++;
                 }
@@ -454,7 +480,7 @@ public sealed class WebRtcSessionService : IDisposable
                 if (clock.ElapsedMilliseconds - windowStartMs >= 30_000)
                 {
                     this._logger.LogInformation(
-                        "WebRTC playout {StreamId}: {Units} units, {Packets} packets, arrivalGapMax={ArrivalGap:F1} ms, sendGapMax={SendGap:F1} ms, late={Late}, waitMax={Wait:F1} ms, delay={Delay:F0} ms, nackMsgs={NackMsgs}, nackPackets={NackPackets}, resent={Resent}.",
+                        "摄像头流 {StreamId} 的 WebRTC 播放统计：访问单元数={Units}，数据包数={Packets}，最大到达间隔={ArrivalGap:F1} 毫秒，最大发送间隔={SendGap:F1} 毫秒，迟到帧数={Late}，最大等待时间={Wait:F1} 毫秒，播放延迟={Delay:F0} 毫秒，NACK 消息数={NackMsgs}，NACK 数据包数={NackPackets}，重传数据包数={Resent}。",
                         session.StreamId, units, packets, maxArrivalGapMs, maxSendGapMs, lateFrames, maxWaitMs, playout.DelaySeconds * 1000,
                         session.NackMessages, session.NackPackets, session.RetransmittedPackets);
                     windowStartMs = clock.ElapsedMilliseconds;
@@ -469,7 +495,7 @@ public sealed class WebRtcSessionService : IDisposable
         }
         catch (Exception exception)
         {
-            this._logger.LogWarning(exception, "WebRTC media forwarding ended for camera stream {StreamId}.", session.StreamId);
+            this._logger.LogWarning(exception, "摄像头流 {StreamId} 的 WebRTC 媒体转发已结束。", session.StreamId);
             if (this._sessions.TryRemove(session.Id, out WebRtcSession? removed))
             {
                 removed.Dispose();
@@ -483,16 +509,6 @@ public sealed class WebRtcSessionService : IDisposable
             .TrimEnd('=')
             .Replace('+', '-')
             .Replace('/', '_');
-    }
-
-    private sealed class CameraPeerConnection(RTCConfiguration configuration, PortRange? ports,
-        ILogger sessionLogger, string streamId) : RTCPeerConnection(configuration, portRange: ports)
-    {
-        public override void Close(string reason)
-        {
-            if (!this.IsClosed) sessionLogger.LogInformation("Closing WebRTC {StreamId}: {Reason}.", streamId, reason);
-            base.Close(reason);
-        }
     }
 
     internal static bool TryReadH264Profile(VideoCodecParameters parameters, out string profile)
@@ -514,5 +530,4 @@ public sealed class WebRtcSessionService : IDisposable
     {
         return new ObjectResult(new { error = message }) { StatusCode = StatusCodes.Status503ServiceUnavailable };
     }
-
 }

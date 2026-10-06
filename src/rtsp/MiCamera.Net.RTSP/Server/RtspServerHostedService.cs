@@ -43,14 +43,20 @@ public sealed class RtspServerHostedService : BackgroundService
     {
         if (username is null || !Regex.IsMatch(username, "\\A[A-Za-z0-9._-]{1,64}\\z") ||
             string.IsNullOrWhiteSpace(password) || password.Length > 256 || password.Any(char.IsControl))
+        {
             throw new ArgumentException("用户名须为 1–64 位字母、数字、点、下划线或连字符；密码须为 1–256 个字符，不能为纯空白或包含控制字符。");
+        }
     }
 
     public TcpListener ReserveListener()
     {
         lock (this._listenerLock)
         {
-            if (this._stopping) throw new IOException("RTSP service is stopping.");
+            if (this._stopping)
+            {
+                throw new IOException("RTSP 服务正在停止。");
+            }
+
             return this.CreateListener();
         }
     }
@@ -59,7 +65,11 @@ public sealed class RtspServerHostedService : BackgroundService
     {
         lock (this._listenerLock)
         {
-            if (this._stopping) throw new IOException("RTSP service is stopping.");
+            if (this._stopping)
+            {
+                throw new IOException("RTSP 服务正在停止。");
+            }
+
             this._listener = listener;
             this._listenerReady.TrySetResult();
         }
@@ -76,7 +86,7 @@ public sealed class RtspServerHostedService : BackgroundService
     {
         if (!IPAddress.TryParse(this._options.Rtsp.ListenAddress, out IPAddress? address))
         {
-            throw new InvalidOperationException("Rtsp.ListenAddress must be an IP address.");
+            throw new InvalidOperationException("Rtsp.ListenAddress 必须是有效的 IP 地址。");
         }
 
         Rtsp.RtspUtils.RegisterUri();
@@ -84,9 +94,13 @@ public sealed class RtspServerHostedService : BackgroundService
         {
             this._listener = this.CreateListener();
             this._listenerReady.TrySetResult();
-            this._logger.LogInformation("RTSP server listening on {Address}:{Port}.", address, this._options.Rtsp.Port);
+            this._logger.LogInformation("RTSP 服务正在监听 {Address}:{Port}。", address, this._options.Rtsp.Port);
         }
-        else this._logger.LogInformation("RTSP is closed pending web credential setup.");
+        else
+        {
+            this._logger.LogInformation("RTSP 服务尚未开放，等待通过网页配置认证凭据。");
+        }
+
         return base.StartAsync(cancellationToken);
     }
 
@@ -108,7 +122,11 @@ public sealed class RtspServerHostedService : BackgroundService
                         try { await this.HandleClientAsync(client, cancellation.Token).ConfigureAwait(false); }
                         finally
                         {
-                            lock (this._listenerLock) this._clients.Remove(client);
+                            lock (this._listenerLock)
+                            {
+                                this._clients.Remove(client);
+                            }
+
                             cancellation.Dispose();
                             client.Dispose();
                         }
@@ -126,7 +144,7 @@ public sealed class RtspServerHostedService : BackgroundService
             }
             catch (Exception exception)
             {
-                this._logger.LogError(exception, "RTSP listener failed while accepting a client.");
+                this._logger.LogError(exception, "RTSP 监听器接受客户端连接时发生错误。");
             }
         }
     }
@@ -148,7 +166,7 @@ public sealed class RtspServerHostedService : BackgroundService
         lock (this._listenerLock)
         {
             this._paused = true;
-            clients = this._clients.ToArray();
+            clients = [.. this._clients];
         }
         foreach (var client in clients)
         {
@@ -163,7 +181,11 @@ public sealed class RtspServerHostedService : BackgroundService
     {
         lock (this._listenerLock)
         {
-            if (this._stopping) throw new IOException("RTSP service is stopping.");
+            if (this._stopping)
+            {
+                throw new IOException("RTSP 服务正在停止。");
+            }
+
             this._paused = false;
         }
     }
@@ -177,7 +199,7 @@ public sealed class RtspServerHostedService : BackgroundService
         }
         catch (Exception exception)
         {
-            this._logger.LogDebug(exception, "RTSP client session ended with an error.");
+            this._logger.LogDebug(exception, "RTSP 客户端会话因错误而结束。");
         }
     }
 }

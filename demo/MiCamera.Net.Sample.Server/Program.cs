@@ -1,7 +1,6 @@
-﻿using MiCamera.Net.Sample.Server.Configuration;
-using MiCamera.Net;
-using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
+﻿using MiCamera.Net;
 using MiCamera.Net.RTSP.Extensions;
+using MiCamera.Net.Sample.Server.Configuration;
 using Microsoft.Extensions.Hosting;
 
 try
@@ -14,7 +13,7 @@ try
 #else
     if (args.Length != 1)
     {
-        throw new InvalidOperationException("Usage: MiCamera.Net.Sample.Server <path-to-MiCameraConfig.json>");
+        throw new InvalidOperationException("用法：MiCamera.Net.Sample.Server <MiCameraConfig.json 文件路径>");
     }
 
     configPath = args[0];
@@ -24,7 +23,17 @@ try
     using IHost host = MiCameraEngineFactory
         .CreateServerBuilder()
         .Initialize(configuration.Server)
-        .WithRtsp(options => ApplyRtspOptions(options, configuration.MediaServer))
+        // 注册媒体处理、RTSP 服务、HTTP API、Swagger、WebRTC、截图等运行服务
+        .WithRtsp(options =>
+        {
+            options.Rtsp = configuration.MediaServer.Rtsp;
+            options.Http = configuration.MediaServer.Http;
+            options.WebRtc = configuration.MediaServer.WebRtc;
+            options.Media = configuration.MediaServer.Media;
+            options.Snapshot = configuration.MediaServer.Snapshot;
+        })
+        // 注册网页配置功能及 SQLite 持久化存储，用户可以通过网页配置 Miloco、摄像头流和 RTSP 凭据
+        // 不能单独配置，需要搭配 WithRtsp 使用
         .WithWebSetup()
         .Build();
 
@@ -32,15 +41,6 @@ try
 }
 catch (Exception exception)
 {
-    Console.Error.WriteLine($"MiCamera.Net could not start: {exception.Message}");
+    Console.Error.WriteLine($"MiCamera.Net 启动失败：{exception.Message}");
     Environment.ExitCode = 1;
-}
-
-static void ApplyRtspOptions(MiCameraRtspOptions target, MiCameraRtspOptions source)
-{
-    target.Rtsp = source.Rtsp;
-    target.Http = source.Http;
-    target.WebRtc = source.WebRtc;
-    target.Media = source.Media;
-    target.Snapshot = source.Snapshot;
 }

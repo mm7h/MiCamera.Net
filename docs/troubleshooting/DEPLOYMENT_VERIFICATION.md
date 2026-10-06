@@ -35,7 +35,9 @@
 
 ## 已执行的本地验证
 
-初次验证环境为 Windows、.NET SDK 9（项目目标仍为 .NET 8）、Node.js 24.19.0、Python 3、Git Bash、ShellCheck 0.11.0 和独立 Compose 2.39.4。使用兼容 Node 运行 npm CLI，避免本机默认 Node 低于锁定依赖的要求；当时没有 Docker Engine。用户随后配置 Docker Desktop，新增验证见下一节；测试没有改变系统防火墙。
+初次验证环境为 Windows、.NET SDK 9（项目目标仍为 .NET 8）、Node.js 24.19.0、Python 3（原记录未注明具体版本）、Git Bash、ShellCheck 0.11.0 和独立 Compose 2.39.4。使用兼容 Node 运行 npm CLI，避免本机默认 Node 低于锁定依赖的要求；当时没有 Docker Engine。用户随后配置 Docker Desktop，新增验证见下一节；测试没有改变系统防火墙。
+
+当前本机使用 **Python 3.13.2**（2026-10-06 通过 `python --version` 确认）；当前打包环境见 [源码开发与构建包](../04-源码开发与构建包.md)。
 
 | 验证 | 结果 | 证明范围 |
 | --- | --- | --- |

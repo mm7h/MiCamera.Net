@@ -25,9 +25,9 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
     private CancellationTokenSource? _generation;
     private Task _workers = Task.CompletedTask;
     private bool _suspended;
-    private static readonly IReadOnlyDictionary<string, StreamPipeline> EmptyPipelines = new Dictionary<string, StreamPipeline>();
+    private static readonly IReadOnlyDictionary<string, StreamPipeline> s_emptyPipelines = new Dictionary<string, StreamPipeline>();
     private IReadOnlyDictionary<string, StreamPipeline> _pipelines => this._serverOptions.Initialization.Configured
-        ? this._initializedPipelines.Value : EmptyPipelines;
+        ? this._initializedPipelines.Value : s_emptyPipelines;
 
     public MediaStreamCoordinator(
         ICameraStreamProvider source,
@@ -79,7 +79,7 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
     {
         if (!this._pipelines.TryGetValue(streamId, out StreamPipeline? pipeline))
         {
-            reason = "The camera stream was not found.";
+            reason = "未找到摄像头流。";
             return false;
         }
 
@@ -94,12 +94,18 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
         {
             this._logger.LogWarning(
                 FFmpegRuntime.Failure,
-                "FFmpeg native libraries are unavailable. RTSP passthrough remains available; snapshots and H.265 WebRTC transcoding are disabled.");
+                "FFmpeg 原生库不可用。RTSP 透传仍可使用；快照和 H.265 WebRTC 转码已禁用。");
         }
 
         await this._serverOptions.Initialization.WaitAsync(stoppingToken).ConfigureAwait(false);
         await this._lifecycleLock.WaitAsync(stoppingToken).ConfigureAwait(false);
-        try { if (!this._suspended) this.StartWorkers(); }
+        try
+        {
+            if (!this._suspended)
+            {
+                this.StartWorkers();
+            }
+        }
         finally { this._lifecycleLock.Release(); }
         try { await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false); }
         finally { await this.SuspendAsync().ConfigureAwait(false); }
@@ -112,11 +118,18 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
         {
             this._suspended = true;
             this._generation?.Cancel();
-            foreach (StreamPipeline pipeline in this._pipelines.Values) pipeline.Stop();
+            foreach (StreamPipeline pipeline in this._pipelines.Values)
+            {
+                pipeline.Stop();
+            }
+
             await this._workers.ConfigureAwait(false);
             this._generation?.Dispose();
             this._generation = null;
-            foreach (StreamPipeline pipeline in this._pipelines.Values) pipeline.Dispose();
+            foreach (StreamPipeline pipeline in this._pipelines.Values)
+            {
+                pipeline.Dispose();
+            }
         }
         finally { this._lifecycleLock.Release(); }
     }
@@ -136,7 +149,11 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
 
     private void StartWorkers()
     {
-        if (this._generation is not null) return;
+        if (this._generation is not null)
+        {
+            return;
+        }
+
         this._generation = CancellationTokenSource.CreateLinkedTokenSource(this._hostToken);
         CancellationToken token = this._generation.Token;
         this._workers = Task.WhenAll(this._pipelines.Values
@@ -160,6 +177,6 @@ public sealed class MediaStreamCoordinator : BackgroundService, INormalizedVideo
             return pipeline;
         }
 
-        throw new KeyNotFoundException($"The camera stream '{streamId}' is not configured.");
+        throw new KeyNotFoundException($"摄像头流“{streamId}”尚未配置。");
     }
 }

@@ -4,11 +4,11 @@ using MiCamera.Net.Abstractions.Common.Models;
 
 namespace MiCamera.Net.Server.Providers;
 
-internal sealed class CameraStreamHubState
+internal sealed class CameraStreamHubState(CameraStreamDescriptor descriptor, int subscriberBufferCapacity)
 {
     private readonly object _stateLock = new();
     private readonly ConcurrentDictionary<long, CameraStreamSubscription> _subscriptions = new();
-    private readonly int _subscriberBufferCapacity;
+    private readonly int _subscriberBufferCapacity = subscriberBufferCapacity;
     private readonly List<EncodedVideoChunk> _latestCodecParameters = [];
     private long _nextSubscriptionId;
     private CameraStreamState _state = CameraStreamState.Stopped;
@@ -16,13 +16,7 @@ internal sealed class CameraStreamHubState
     private DateTimeOffset? _lastReceivedAt;
     private string? _lastError;
 
-    public CameraStreamHubState(CameraStreamDescriptor descriptor, int subscriberBufferCapacity)
-    {
-        this.Descriptor = descriptor;
-        this._subscriberBufferCapacity = subscriberBufferCapacity;
-    }
-
-    public CameraStreamDescriptor Descriptor { get; }
+    public CameraStreamDescriptor Descriptor { get; } = descriptor;
 
     public CameraStreamSubscription AddSubscription()
     {
@@ -107,7 +101,7 @@ internal sealed class CameraStreamHubState
                 }
             }
 
-            codecParameters = this._latestCodecParameters.ToArray();
+            codecParameters = [.. this._latestCodecParameters];
         }
 
         foreach (CameraStreamSubscription subscription in this._subscriptions.Values)

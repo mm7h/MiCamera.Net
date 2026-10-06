@@ -1,5 +1,4 @@
-﻿using MiCamera.Net.Abstractions.ConfigSettings;
-using MiCamera.Net.Abstractions.Streams;
+﻿using MiCamera.Net.Abstractions.Streams;
 using MiCamera.Net.Server.Management;
 using MiCamera.Net.Server.Protocol.Miloco;
 using MiCamera.Net.Server.Providers;
@@ -10,9 +9,7 @@ namespace MiCamera.Net.Server;
 
 internal static class ServerBuilderExtensions
 {
-    public static IHostBuilder RegisterMiCameraCore(
-        this IHostBuilder hostBuilder,
-        MiCameraServerOptions options)
+    public static IHostBuilder RegisterMiCameraCore(this IHostBuilder hostBuilder)
     {
         return hostBuilder.ConfigureServices((_, services) =>
         {

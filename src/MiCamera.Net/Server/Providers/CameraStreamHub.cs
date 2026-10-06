@@ -14,10 +14,10 @@ namespace MiCamera.Net.Server.Providers;
 internal sealed class CameraStreamHub : ICameraStreamProvider
 {
     private readonly MiCameraServerOptions _options;
-    private static readonly IReadOnlyDictionary<string, CameraStreamHubState> EmptyStates = new Dictionary<string, CameraStreamHubState>();
+    private static readonly IReadOnlyDictionary<string, CameraStreamHubState> s_emptyStates = new Dictionary<string, CameraStreamHubState>();
     private volatile Lazy<IReadOnlyDictionary<string, CameraStreamHubState>> _initializedStates;
     private IReadOnlyDictionary<string, CameraStreamHubState> _states => this._options.Initialization.Configured
-        ? this._initializedStates.Value : EmptyStates;
+        ? this._initializedStates.Value : s_emptyStates;
 
     public CameraStreamHub(MiCameraServerOptions options)
     {
@@ -35,7 +35,7 @@ internal sealed class CameraStreamHub : ICameraStreamProvider
             StringComparer.OrdinalIgnoreCase));
 
     public IReadOnlyCollection<CameraStreamDescriptor> Streams =>
-        this._states.Values.Select(static state => state.Descriptor).ToArray();
+        [.. this._states.Values.Select(static state => state.Descriptor)];
 
     public bool TryGetSnapshot(string streamId, out CameraStreamSnapshot? snapshot)
     {
@@ -109,7 +109,7 @@ internal sealed class CameraStreamHub : ICameraStreamProvider
     {
         if (!this._states.TryGetValue(streamId, out CameraStreamHubState? state))
         {
-            throw new KeyNotFoundException($"The camera stream '{streamId}' is not configured.");
+            throw new KeyNotFoundException($"摄像头流“{streamId}”尚未配置。");
         }
 
         return state;

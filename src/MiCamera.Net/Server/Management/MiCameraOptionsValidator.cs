@@ -15,17 +15,17 @@ internal static class MiCameraOptionsValidator
         if (options.Initialization.Configured && (!Uri.TryCreate(options.Miloco.BaseUrl, UriKind.Absolute, out Uri? baseUri) ||
             (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)))
         {
-            throw new ArgumentException("Miloco.BaseUrl must be an absolute HTTP or HTTPS URL.", nameof(options));
+            throw new ArgumentException("Miloco.BaseUrl 必须是完整的 HTTP 或 HTTPS 地址。", nameof(options));
         }
 
         if (options.Initialization.Configured && string.IsNullOrWhiteSpace(options.Miloco.Username))
         {
-            throw new ArgumentException("Miloco.Username is required.", nameof(options));
+            throw new ArgumentException("必须配置 Miloco.Username。", nameof(options));
         }
 
         if (options.Initialization.Configured && string.IsNullOrWhiteSpace(options.Miloco.Password))
         {
-            throw new ArgumentException("Miloco.Password is required.", nameof(options));
+            throw new ArgumentException("必须配置 Miloco.Password。", nameof(options));
         }
 
         EnsurePositive(options.Miloco.RequestTimeout, "Miloco.RequestTimeout");
@@ -35,13 +35,13 @@ internal static class MiCameraOptionsValidator
 
         if (options.Streaming.MaxMessageBytes <= 0)
         {
-            throw new ArgumentException("Streaming.MaxMessageBytes must be greater than zero.", nameof(options));
+            throw new ArgumentException("Streaming.MaxMessageBytes 必须大于 0。", nameof(options));
         }
 
         if (options.Streaming.SubscriberBufferCapacity < 4)
         {
             throw new ArgumentException(
-                "Streaming.SubscriberBufferCapacity must be at least four to deliver codec parameters and a key frame.",
+                "Streaming.SubscriberBufferCapacity 必须至少为 4，才能传递编码参数和关键帧。",
                 nameof(options));
         }
 
@@ -50,22 +50,22 @@ internal static class MiCameraOptionsValidator
 
         if (options.Reconnect.MaximumDelay < options.Reconnect.InitialDelay)
         {
-            throw new ArgumentException("Reconnect.MaximumDelay cannot be less than Reconnect.InitialDelay.", nameof(options));
+            throw new ArgumentException("Reconnect.MaximumDelay 不能小于 Reconnect.InitialDelay。", nameof(options));
         }
 
         if (options.Reconnect.BackoffMultiplier < 1d)
         {
-            throw new ArgumentException("Reconnect.BackoffMultiplier must be at least one.", nameof(options));
+            throw new ArgumentException("Reconnect.BackoffMultiplier 必须至少为 1。", nameof(options));
         }
 
         if (options.Reconnect.JitterRatio is < 0d or > 1d)
         {
-            throw new ArgumentException("Reconnect.JitterRatio must be between zero and one.", nameof(options));
+            throw new ArgumentException("Reconnect.JitterRatio 必须在 0–1 之间。", nameof(options));
         }
 
         if (options.Initialization.Configured && options.Streams.Count == 0)
         {
-            throw new ArgumentException("At least one camera stream must be configured.", nameof(options));
+            throw new ArgumentException("必须至少配置一路摄像头流。", nameof(options));
         }
 
         HashSet<string> streamIds = new(StringComparer.OrdinalIgnoreCase);
@@ -75,38 +75,38 @@ internal static class MiCameraOptionsValidator
         {
             if (stream is null)
             {
-                throw new ArgumentException("Camera stream entries cannot be null.", nameof(options));
+                throw new ArgumentException("摄像头流配置项不能为 null。", nameof(options));
             }
 
             if (string.IsNullOrWhiteSpace(stream.StreamId))
             {
-                throw new ArgumentException("Each camera stream needs a StreamId.", nameof(options));
+                throw new ArgumentException("每路摄像头流都必须配置 StreamId。", nameof(options));
             }
 
             if (!streamIds.Add(stream.StreamId))
             {
-                throw new ArgumentException($"The StreamId '{stream.StreamId}' is duplicated.", nameof(options));
+                throw new ArgumentException($"StreamId“{stream.StreamId}”重复。", nameof(options));
             }
 
             if (string.IsNullOrWhiteSpace(stream.CameraDeviceId))
             {
-                throw new ArgumentException($"Camera stream '{stream.StreamId}' needs a CameraDeviceId.", nameof(options));
+                throw new ArgumentException($"摄像头流“{stream.StreamId}”必须配置 CameraDeviceId。", nameof(options));
             }
 
             if (stream.Channel < 0)
             {
-                throw new ArgumentException($"Camera stream '{stream.StreamId}' has an invalid Channel.", nameof(options));
+                throw new ArgumentException($"摄像头流“{stream.StreamId}”的 Channel 配置无效。", nameof(options));
             }
 
             if (!Enum.IsDefined(stream.Codec))
             {
-                throw new ArgumentException($"Camera stream '{stream.StreamId}' has an invalid Codec.", nameof(options));
+                throw new ArgumentException($"摄像头流“{stream.StreamId}”的 Codec 配置无效。", nameof(options));
             }
 
             if (stream.NominalFrameRate is < 1d or > 120d)
             {
                 throw new ArgumentException(
-                    $"Camera stream '{stream.StreamId}' NominalFrameRate must be between 1 and 120.",
+                    $"摄像头流“{stream.StreamId}”的 NominalFrameRate 必须在 1–120 之间。",
                     nameof(options));
             }
 
@@ -114,7 +114,7 @@ internal static class MiCameraOptionsValidator
             if (!cameraChannels.Add(cameraChannel))
             {
                 throw new ArgumentException(
-                    $"Camera '{stream.CameraDeviceId}' channel {stream.Channel} is configured more than once.",
+                    $"摄像头“{stream.CameraDeviceId}”的通道 {stream.Channel} 被重复配置。",
                     nameof(options));
             }
         }
@@ -124,7 +124,7 @@ internal static class MiCameraOptionsValidator
     {
         if (value <= TimeSpan.Zero)
         {
-            throw new ArgumentException($"{name} must be greater than zero.");
+            throw new ArgumentException($"{name} 必须大于 0。");
         }
     }
 }

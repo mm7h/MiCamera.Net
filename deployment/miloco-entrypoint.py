@@ -22,7 +22,7 @@ def main():
 
     SERVER_CONFIG["enable_file_logging"] = False
     MIoTCameraInstance.register_decode_jpg_async = skip_vision_jpeg
-    print("MiCamera.Net upstream: raw video enabled; duplicate vision JPEG decoding disabled.", flush=True)
+    print("MiCamera.Net 上游服务：已启用原始视频，已禁用视觉功能的重复 JPEG 解码。", flush=True)
     runpy.run_path("/app/start_server.py", run_name="__main__")
 
 

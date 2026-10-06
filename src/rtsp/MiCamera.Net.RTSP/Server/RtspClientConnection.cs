@@ -1,13 +1,13 @@
-﻿using System.Net;
+﻿using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
-using System.Diagnostics;
 using MiCamera.Net.Abstractions.Common.Enums;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.Media;
-using Microsoft.Extensions.Logging;
 using MiCamera.Net.RTSP.Services;
+using Microsoft.Extensions.Logging;
 
 namespace MiCamera.Net.RTSP.Server;
 
@@ -60,7 +60,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
             }
             catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested && idleTimeout.IsCancellationRequested)
             {
-                this._logger.LogDebug("RTSP client session {SessionId} expired after {Timeout} of control-channel inactivity.", this._sessionId, this._options.Rtsp.SessionTimeout);
+                this._logger.LogDebug("RTSP 客户端会话 {SessionId} 的控制通道已闲置 {Timeout}，会话已过期。", this._sessionId, this._options.Rtsp.SessionTimeout);
                 break;
             }
 
@@ -208,7 +208,10 @@ internal sealed class RtspClientConnection : IAsyncDisposable
                 previousSequence = unit.SourceSequence;
                 double wait = playout.WaitSeconds(clock.Elapsed.TotalSeconds, unit.Timestamp90Khz, framesSkipped);
                 if (wait > 0)
+                {
                     await Task.Delay(TimeSpan.FromSeconds(wait), cancellationToken).ConfigureAwait(false);
+                }
+
                 long frameStarted = Stopwatch.GetTimestamp();
                 IReadOnlyList<byte[]> packets = RtpPacketizer.Packetize(unit, this._ssrc, ref this._sequenceNumber, this._options.Rtsp.RtpMtu);
                 foreach (byte[] packet in packets)
@@ -232,7 +235,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            this._logger.LogDebug(exception, "RTSP media sender ended for {StreamId}.", streamId);
+            this._logger.LogDebug(exception, "摄像头流 {StreamId} 的 RTSP 媒体发送已结束。", streamId);
         }
     }
 
@@ -283,7 +286,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
         DateTimeOffset now = DateTimeOffset.UtcNow;
         long milliseconds = now.ToUnixTimeMilliseconds();
         // Split seconds and fraction before scaling: epoch milliseconds times 2^32 overflows ulong.
-        WriteUInt32(report, 8, unchecked((uint)(milliseconds / 1000 + 2_208_988_800L)));
+        WriteUInt32(report, 8, unchecked((uint)((milliseconds / 1000) + 2_208_988_800L)));
         WriteUInt32(report, 12, (uint)((ulong)(milliseconds % 1000) * 4_294_967_296UL / 1000));
         WriteUInt32(report, 16, rtpTimestamp);
         WriteUInt32(report, 20, (uint)Interlocked.Read(ref this._packetCount));
@@ -437,7 +440,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
             if (!TryGetParameterSet(parameters, 7, out ReadOnlyMemory<byte> sps) ||
                 !TryGetParameterSet(parameters, 8, out ReadOnlyMemory<byte> pps))
             {
-                throw new InvalidOperationException("H.264 codec parameters are incomplete.");
+                throw new InvalidOperationException("H.264 编码参数不完整。");
             }
 
             ReadOnlySpan<byte> spsBytes = sps.Span;
@@ -455,7 +458,7 @@ internal sealed class RtspClientConnection : IAsyncDisposable
                 !TryGetParameterSet(parameters, 33, out ReadOnlyMemory<byte> sps) ||
                 !TryGetParameterSet(parameters, 34, out ReadOnlyMemory<byte> pps))
             {
-                throw new InvalidOperationException("H.265 codec parameters are incomplete.");
+                throw new InvalidOperationException("H.265 编码参数不完整。");
             }
 
             attributes = string.Concat(
@@ -509,28 +512,39 @@ internal sealed class RtspClientConnection : IAsyncDisposable
                 int count = head.Count;
                 if (count >= 4 && head[count - 4] == 13 && head[count - 3] == 10 &&
                     head[count - 2] == 13 && head[count - 1] == 10)
+                {
                     break;
+                }
             }
             if (head.Count >= 16_384)
-                throw new InvalidDataException("RTSP request headers are too large.");
+            {
+                throw new InvalidDataException("RTSP 请求头过大。");
+            }
 
-            string[] lines = Encoding.ASCII.GetString(head.ToArray()).Split("\r\n");
+            string[] lines = Encoding.ASCII.GetString([.. head]).Split("\r\n");
             string[] parts = lines[0].Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length != 3 || parts[2] != "RTSP/1.0")
-                throw new InvalidDataException("Invalid RTSP request line.");
+            {
+                throw new InvalidDataException("RTSP 请求行无效。");
+            }
 
             Dictionary<string, string> headers = new(StringComparer.OrdinalIgnoreCase);
             foreach (string line in lines.Skip(1))
             {
                 int separator = line.IndexOf(':');
                 if (separator > 0)
+                {
                     headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+                }
             }
 
             if (headers.TryGetValue("Content-Length", out string? value))
             {
                 if (!int.TryParse(value, out int length) || length is < 0 or > 65_536)
-                    throw new InvalidDataException("Invalid RTSP request body length.");
+                {
+                    throw new InvalidDataException("RTSP 请求体长度无效。");
+                }
+
                 byte[] body = new byte[length];
                 await reader.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
             }

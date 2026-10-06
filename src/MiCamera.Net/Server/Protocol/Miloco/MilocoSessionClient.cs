@@ -4,9 +4,11 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using Flurl.Http;
 using Flurl.Http.Configuration;
 using MiCamera.Net.Abstractions.ConfigSettings;
+using MiCamera.Net.Server.Common;
 using Microsoft.Extensions.Logging;
 
 namespace MiCamera.Net.Server.Protocol.Miloco;
@@ -39,16 +41,25 @@ internal sealed class MilocoSessionClient : IDisposable
     {
         this._trustedServerCertificate = LoadTrustedServerCertificate(this._options.Miloco.TrustedServerCertificatePath);
         if (this.AllowInvalidServerCertificate)
-            this._logger.LogWarning("Miloco server certificate validation is disabled for {Host}.", this.BaseUri.GetLeftPart(UriPartial.Authority));
+        {
+            this._logger.LogWarning("已禁用 Miloco 服务 {Host} 的证书校验。", this.BaseUri.GetLeftPart(UriPartial.Authority));
+        }
+
         return new FlurlClientBuilder(this.BaseUri.AbsoluteUri.TrimEnd('/'))
+            .WithSettings(settings => settings.JsonSerializer = new DefaultJsonSerializer(new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+            }))
             .ConfigureInnerHandler(handler =>
             {
                 handler.UseCookies = true;
                 handler.CookieContainer = this.Cookies;
                 handler.AllowAutoRedirect = false;
                 if (this.AllowInvalidServerCertificate || this.HasTrustedServerCertificate)
+                {
                     handler.ServerCertificateCustomValidationCallback = (_, certificate, _, errors) =>
                         this.ValidateServerCertificate(certificate, errors);
+                }
             })
             .ConfigureHttpClient(client => client.Timeout = Timeout.InfiniteTimeSpan)
             .Build();
@@ -61,7 +72,11 @@ internal sealed class MilocoSessionClient : IDisposable
     // Called only after all workers using this session have stopped.
     public void Reset()
     {
-        if (this._connection.IsValueCreated) this._client.Dispose();
+        if (this._connection.IsValueCreated)
+        {
+            this._client.Dispose();
+        }
+
         this._trustedServerCertificate?.Dispose();
         this._trustedServerCertificate = null;
         this.Cookies = new CookieContainer();
@@ -137,7 +152,7 @@ internal sealed class MilocoSessionClient : IDisposable
             MilocoResponseValidator.EnsureXiaomiAccountAuthorized(await statusResponse.GetStringAsync().ConfigureAwait(false));
 
             this._isAuthenticated = true;
-            this._logger.LogInformation("Authenticated with Miloco at {MilocoBaseUrl}.", this.BaseUri.GetLeftPart(UriPartial.Authority));
+            this._logger.LogInformation("已通过 Miloco 服务 {MilocoBaseUrl} 的身份认证。", this.BaseUri.GetLeftPart(UriPartial.Authority));
         }
         catch (MilocoAuthenticationException)
         {
@@ -161,15 +176,50 @@ internal sealed class MilocoSessionClient : IDisposable
         }
     }
 
-    public async Task<System.Text.Json.JsonElement> GetCamerasAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<MilocoCameraDevice>> GetCamerasAsync(CancellationToken cancellationToken)
     {
         await this.EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
         using IFlurlResponse response = await this._client.Request("api", "miot", "camera_list")
             .AllowAnyHttpStatus().WithTimeout(this._options.Miloco.RequestTimeout)
             .GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         if (!response.ResponseMessage.IsSuccessStatusCode)
+        {
             throw new MilocoAuthenticationException($"获取 Miloco 摄像头失败（HTTP {response.StatusCode}）。请重新连接后重试。");
-        return MilocoResponseValidator.ReadData(await response.GetStringAsync().ConfigureAwait(false));
+        }
+
+        MilocoCameraListResponse? result;
+        try
+        {
+            result = await response.GetJsonAsync<MilocoCameraListResponse>().ConfigureAwait(false);
+        }
+        catch (FlurlParsingException)
+        {
+            throw new MilocoAuthenticationException("Miloco 摄像头列表格式不兼容，请检查服务版本。");
+        }
+
+        if (result?.Code != 0 || result.Data is null)
+        {
+            throw new MilocoAuthenticationException(
+                "Miloco 返回了失败或不受支持的响应。请确认 Miloco 服务已正常运行，且当前版本与本项目兼容；响应内容未输出，以保护认证信息。");
+        }
+
+        List<MilocoCameraDevice> devices = result.Data;
+        for (int index = 0; index < devices.Count; index++)
+        {
+            MilocoCameraDevice device = devices[index];
+            if (device is null || string.IsNullOrWhiteSpace(device.Did))
+            {
+                throw new MilocoAuthenticationException("Miloco 摄像头列表缺少有效的 DID，请检查服务版本。");
+            }
+
+            devices[index] = device with
+            {
+                Name = device.Name ?? "未命名摄像头",
+                ChannelCount = device.ChannelCount is > 0 ? device.ChannelCount : null
+            };
+        }
+
+        return devices;
     }
 
     public void InvalidateAuthentication()
@@ -200,7 +250,11 @@ internal sealed class MilocoSessionClient : IDisposable
         }
 
         this._disposed = true;
-        if (this._connection.IsValueCreated) this._client.Dispose();
+        if (this._connection.IsValueCreated)
+        {
+            this._client.Dispose();
+        }
+
         this._trustedServerCertificate?.Dispose();
         this._authenticationLock.Dispose();
     }
@@ -268,7 +322,7 @@ internal sealed class MilocoSessionClient : IDisposable
         }
         catch (Exception exception) when (exception is CryptographicException or IOException or UnauthorizedAccessException)
         {
-            throw new InvalidOperationException("Miloco trusted server certificate could not be loaded.", exception);
+            throw new InvalidOperationException("无法加载 Miloco 可信服务证书。", exception);
         }
     }
 

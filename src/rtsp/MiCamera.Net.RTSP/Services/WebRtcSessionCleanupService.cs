@@ -2,14 +2,9 @@
 
 namespace MiCamera.Net.RTSP.Services;
 
-internal sealed class WebRtcSessionCleanupService : BackgroundService
+internal sealed class WebRtcSessionCleanupService(WebRtcSessionService sessions) : BackgroundService
 {
-    private readonly WebRtcSessionService _sessions;
-
-    public WebRtcSessionCleanupService(WebRtcSessionService sessions)
-    {
-        this._sessions = sessions;
-    }
+    private readonly WebRtcSessionService _sessions = sessions;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

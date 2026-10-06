@@ -200,7 +200,7 @@ export function SetupWizard({ client: initialClient, connection, onConnected, in
             {step === 3 && <Button type="primary" loading={busy} onClick={() => void save()}>{editing ? "保存配置" : "保存并启用"}</Button>}
         </Space>}>
         <Steps current={step} className="setup-steps" items={[{ title: "配置 Miloco" }, { title: "连接后端 API" }, { title: "选择摄像头" }, { title: "RTSP 凭据" }, { title: "完成" }]} />
-        {editing && step < 4 && <Alert className="setup-notice" type="info" showIcon title="保存后立即应用配置，无需重启后端。已有播放连接会关闭，请在主页面重新连接。" />}
+        {editing && step < 4 && <Alert className="setup-notice" type="info" showIcon title="保存后会立即应用配置。已有播放连接会关闭，请在主页面重新连接。" />}
         {activationPending && <Alert className="setup-notice" type="warning" showIcon title="配置已保存但尚未生效，请先重试应用已保存的配置。" />}
         {error !== null && <Alert className="setup-notice" type="error" showIcon title={error} action={saved === null ? <Space><Button onClick={() => setAttempt((value) => value + 1)}>重试</Button><Button onClick={() => { setStep(1); setError(null); }}>修改 API 地址</Button></Space> : undefined} />}
         <Spin spinning={loading}>

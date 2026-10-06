@@ -1,11 +1,8 @@
-using MiCamera.Net.Abstractions.ConfigSettings;
+﻿using MiCamera.Net.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using Microsoft.Data.Sqlite;
 
 namespace MiCamera.Net.RTSP.Services;
-
-public sealed record SavedApplicationSettings(long Version, string MilocoBaseUrl, string MilocoPasswordMd5,
-    string RtspUsername, string RtspDigestHa1, List<CameraStreamOptions> Streams);
 
 /// <summary>Stores the entire configuration in one SQLite transaction.</summary>
 public sealed class ApplicationSettingsStore
@@ -20,7 +17,10 @@ public sealed class ApplicationSettingsStore
     {
         directory = Path.GetFullPath(directory);
         Directory.CreateDirectory(directory);
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
         string path = Path.Combine(directory, "settings.db");
         this._connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
         this._server = server;
@@ -29,11 +29,17 @@ public sealed class ApplicationSettingsStore
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version";
         long version = (long)command.ExecuteScalar()!;
-        if (version is not (0 or 1)) throw new IOException("不支持此 SQLite 配置版本，请使用对应版本的服务。");
+        if (version is not (0 or 1))
+        {
+            throw new IOException("不支持此 SQLite 配置版本，请使用对应版本的服务。");
+        }
         if (version == 0)
         {
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
-            if ((long)command.ExecuteScalar()! != 0) throw new IOException("SQLite 配置结构无效，不会覆盖已有数据。");
+            if ((long)command.ExecuteScalar()! != 0)
+            {
+                throw new IOException("SQLite 配置结构无效，不会覆盖已有数据。");
+            }
             command.CommandText = """
                 BEGIN;
                 CREATE TABLE Settings (Id INTEGER PRIMARY KEY CHECK (Id=1), Version INTEGER NOT NULL,
@@ -48,7 +54,10 @@ public sealed class ApplicationSettingsStore
                 """;
             command.ExecuteNonQuery();
         }
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
         SavedApplicationSettings? saved = this.Read();
         if (saved is not null)
         {
@@ -76,16 +85,22 @@ public sealed class ApplicationSettingsStore
         SavedApplicationSettings saved;
         using (SqliteDataReader reader = command.ExecuteReader())
         {
-            if (!reader.Read()) return null;
+            if (!reader.Read())
+            {
+                return null;
+            }
             saved = new(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), []);
         }
         command.CommandText = "SELECT StreamId, CameraDeviceId, Channel, Codec, NominalFrameRate FROM Streams ORDER BY rowid";
         using SqliteDataReader streams = command.ExecuteReader();
-        while (streams.Read()) saved.Streams.Add(new()
+        while (streams.Read())
         {
-            StreamId = streams.GetString(0), CameraDeviceId = streams.GetString(1), Channel = streams.GetInt32(2),
-            Codec = Enum.Parse<MiCamera.Net.Abstractions.Common.Enums.VideoCodec>(streams.GetString(3)), NominalFrameRate = streams.GetDouble(4)
-        });
+            saved.Streams.Add(new()
+            {
+                StreamId = streams.GetString(0), CameraDeviceId = streams.GetString(1), Channel = streams.GetInt32(2),
+                Codec = Enum.Parse<MiCamera.Net.Abstractions.Common.Enums.VideoCodec>(streams.GetString(3)), NominalFrameRate = streams.GetDouble(4)
+            });
+        }
         return saved;
     }
 
@@ -97,7 +112,10 @@ public sealed class ApplicationSettingsStore
         command.Transaction = transaction;
         command.CommandText = "SELECT Version FROM Settings WHERE Id=1";
         long current = command.ExecuteScalar() is long value ? value : 0;
-        if (current != expectedVersion) throw new SettingsConflictException();
+        if (current != expectedVersion)
+        {
+            throw new SettingsConflictException();
+        }
         SavedApplicationSettings saved = settings with { Version = checked(current + 1) };
         command.CommandText = """
             INSERT INTO Settings VALUES (1,$version,$baseUrl,$miloco,$username,$digest)
@@ -138,9 +156,4 @@ public sealed class ApplicationSettingsStore
     }
 
     public void MarkActive(long version) => Interlocked.Exchange(ref this._activeVersion, version);
-}
-
-public sealed class SettingsConflictException : Exception
-{
-    public SettingsConflictException() : base("配置已被其他页面修改，请重新打开配置后再保存。") { }
 }

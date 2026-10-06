@@ -1,5 +1,4 @@
-﻿using System.Net;
-using MiCamera.Net.Abstractions;
+﻿using MiCamera.Net.Abstractions;
 using MiCamera.Net.Media.Services;
 using MiCamera.Net.RTSP.Abstractions.ConfigSettings;
 using MiCamera.Net.RTSP.Controllers;
@@ -8,7 +7,6 @@ using MiCamera.Net.RTSP.Server;
 using MiCamera.Net.RTSP.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
@@ -31,7 +29,7 @@ public static class MiCameraRtspBuilderExtensions
 
         if (builder.HostBuilder.Properties.ContainsKey(RegistrationKey))
         {
-            throw new InvalidOperationException("WithRtsp() can only be called once for a server builder.");
+            throw new InvalidOperationException("每个服务构建器只能调用一次 WithRtsp()。");
         }
 
         MiCameraRtspOptions options = new();
@@ -71,7 +69,7 @@ public static class MiCameraRtspBuilderExtensions
             {
                 if (options.Http.AllowedOrigins.Count > 0)
                 {
-                    policy.WithOrigins(options.Http.AllowedOrigins.ToArray())
+                    policy.WithOrigins([.. options.Http.AllowedOrigins])
                         .AllowAnyHeader()
                         .AllowAnyMethod();
                 }

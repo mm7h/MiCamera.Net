@@ -62,14 +62,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         values = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         streams = values["streams"]
-        assert values["version"] == self.server.state["version"], "Wrong backend version"
+        assert values["version"] == self.server.state["version"], "后端配置版本不匹配。"
         assert streams and all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", s["streamId"]) for s in streams)
         assert len({s["streamId"].lower() for s in streams}) == len(streams)
         assert len({(s["cameraDeviceId"], s["channel"]) for s in streams}) == len(streams)
         self.server.state.update(version=values["version"] + 1, milocoBaseUrl=values["baseUrl"],
                                  rtspUsername=values["rtspUsername"], hasMilocoPin=True,
                                  hasRtspPassword=True, streams=streams)
-        print("Validated wizard save on", self.server.server_port, flush=True)
+        print("已验证配置向导保存，端口：", self.server.server_port, flush=True)
         self.reply(dict(configured=True, listening=True, applyPending=False,
                         version=self.server.state["version"], username=values["rtspUsername"]))
 
@@ -80,5 +80,5 @@ if __name__ == "__main__":
         server.state = dict(version=0, milocoBaseUrl="", hasMilocoPin=False,
                             rtspUsername="", hasRtspPassword=False, streams=[])
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    print("Disposable UI fixture listening on 5080/5082", flush=True)
+    print("临时界面验证服务正在监听 5080/5082。", flush=True)
     threading.Event().wait()

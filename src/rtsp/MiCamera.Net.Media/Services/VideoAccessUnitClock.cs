@@ -13,7 +13,7 @@ namespace MiCamera.Net.Media.Services;
 /// keeps the clock on the source's real cadence, and because the window only ever holds real
 /// elapsed time the timeline cannot drift away from the source.
 /// </summary>
-internal sealed class VideoAccessUnitClock
+internal sealed class VideoAccessUnitClock(string streamId, VideoCodec codec, double nominalFrameRate)
 {
     /// <summary>
     /// Arrival samples behind the cadence estimate: about two seconds at 20 fps. Long enough to
@@ -27,19 +27,12 @@ internal sealed class VideoAccessUnitClock
     /// </summary>
     private const int MinimumPeriodSamples = 8;
 
-    private readonly string _streamId;
-    private readonly VideoCodec _codec;
-    private readonly uint _frameDuration;
+    private readonly string _streamId = streamId;
+    private readonly VideoCodec _codec = codec;
+    private readonly uint _frameDuration = (uint)Math.Max(1, Math.Round(90_000d / nominalFrameRate));
     private readonly Queue<DateTimeOffset> _arrivals = new();
     private uint _timestamp;
     private DateTimeOffset? _previousReceivedAt;
-
-    public VideoAccessUnitClock(string streamId, VideoCodec codec, double nominalFrameRate)
-    {
-        this._streamId = streamId;
-        this._codec = codec;
-        this._frameDuration = (uint)Math.Max(1, Math.Round(90_000d / nominalFrameRate));
-    }
 
     public VideoAccessUnit Create(EncodedVideoChunk chunk)
     {

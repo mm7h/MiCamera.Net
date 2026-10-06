@@ -8,21 +8,14 @@ namespace MiCamera.Net.Server.Protocol.Miloco;
 /// <summary>
 /// Creates short-lived Websocket.Client instances that share the authenticated Miloco cookie container.
 /// </summary>
-internal sealed class MilocoWebSocketClientFactory
+internal sealed class MilocoWebSocketClientFactory(
+    MilocoSessionClient session,
+    MiCameraServerOptions options,
+    ILogger<WebsocketClient> logger)
 {
-    private readonly MilocoSessionClient _session;
-    private readonly MiCameraServerOptions _options;
-    private readonly ILogger<WebsocketClient> _logger;
-
-    public MilocoWebSocketClientFactory(
-        MilocoSessionClient session,
-        MiCameraServerOptions options,
-        ILogger<WebsocketClient> logger)
-    {
-        this._session = session;
-        this._options = options;
-        this._logger = logger;
-    }
+    private readonly MilocoSessionClient _session = session;
+    private readonly MiCameraServerOptions _options = options;
+    private readonly ILogger<WebsocketClient> _logger = logger;
 
     public WebsocketClient Create(Uri streamUri)
     {

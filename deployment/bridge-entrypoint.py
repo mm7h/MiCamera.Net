@@ -18,14 +18,14 @@ SECRETS = {
 def read_secret(path):
     value = path.read_text(encoding="ascii").rstrip("\r\n")
     if not value or "\r" in value or "\n" in value:
-        raise RuntimeError(f"Secret file {path} must contain one non-empty value.")
+        raise RuntimeError(f"密钥文件 {path} 必须且只能包含一个非空值。")
     return value
 
 
 def materialize_configuration():
     document = json.loads(CONFIG_TEMPLATE.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
-        raise RuntimeError("MiCameraConfig.json must contain a JSON object.")
+        raise RuntimeError("MiCameraConfig.json 必须包含 JSON 对象。")
 
     for property_path, secret_path in SECRETS.items():
         values = document
@@ -33,7 +33,7 @@ def materialize_configuration():
             values = values.get(section)
             if not isinstance(values, dict):
                 section_path = ".".join(property_path[:index + 1])
-                raise RuntimeError(f"MiCameraConfig.json is missing the {section_path} object.")
+                raise RuntimeError(f"MiCameraConfig.json 缺少 {section_path} 对象。")
         values[property_path[-1]] = read_secret(secret_path)
 
     descriptor, temporary_path = tempfile.mkstemp(
@@ -57,7 +57,7 @@ def materialize_configuration():
 def main():
     validate_only = sys.argv[1:] == ["--validate-config"]
     if len(sys.argv) > 1 and not validate_only:
-        raise RuntimeError("The bridge entrypoint accepts only --validate-config.")
+        raise RuntimeError("桥接服务入口仅接受 --validate-config 参数。")
 
     runtime_config = materialize_configuration()
     if validate_only:

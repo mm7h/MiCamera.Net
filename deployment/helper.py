@@ -85,17 +85,17 @@ def prepare_state_directory():
     secret_directory = secrets_dir()
     secret_directory.mkdir(mode=0o700, exist_ok=True)
     if not secret_directory.is_dir():
-        raise DeploymentError("部署 secrets 路径不是目录。")
+        raise DeploymentError("部署密钥目录不是目录。")
     os.chmod(secret_directory, 0o700)
 
 
 def secret_path(name):
     if name not in SECRET_PATTERNS:
-        raise DeploymentError("未知部署 secret。")
+        raise DeploymentError("未知部署密钥。")
     directory = secrets_dir()
     reject_symlink(directory, "secrets")
     if not directory.is_dir():
-        raise DeploymentError("部署 secrets 路径不存在。")
+        raise DeploymentError("部署密钥目录不存在。")
     path = directory / name
     reject_symlink(path, f"secrets/{name}")
     return path
@@ -103,40 +103,40 @@ def secret_path(name):
 
 def normalize_secret_content(content, name, allow_empty=False):
     if len(content) > SECRET_LIMIT:
-        raise DeploymentError(f"secret 文件无效：{name}。")
+        raise DeploymentError(f"密钥文件无效：{name}。")
     if content.endswith(b"\r\n"):
         content = content[:-2]
     elif content.endswith(b"\n"):
         content = content[:-1]
     if b"\r" in content or b"\n" in content:
-        raise DeploymentError(f"secret 文件必须只包含一个值：{name}。")
+        raise DeploymentError(f"密钥文件必须只包含一个值：{name}。")
     try:
         value = content.decode("ascii")
     except UnicodeDecodeError as error:
-        raise DeploymentError(f"secret 文件必须是 ASCII：{name}。") from error
+        raise DeploymentError(f"密钥文件必须是 ASCII：{name}。") from error
     if not value and allow_empty:
         return value
     if not SECRET_PATTERNS[name].fullmatch(value):
-        raise DeploymentError(f"secret 文件格式无效：{name}。")
+        raise DeploymentError(f"密钥文件格式无效：{name}。")
     return value
 
 
 def read_secret(name, allow_empty=False):
     path = secret_path(name)
     if not path.is_file():
-        raise DeploymentError(f"缺少部署 secret：{name}。")
+        raise DeploymentError(f"缺少部署密钥：{name}。")
     try:
         content = path.read_bytes()
     except OSError as error:
-        raise DeploymentError(f"无法读取部署 secret：{name}。") from error
+        raise DeploymentError(f"无法读取部署密钥：{name}。") from error
     return normalize_secret_content(content, name, allow_empty)
 
 
 def write_secret(name, value):
     if value and not SECRET_PATTERNS[name].fullmatch(value):
-        raise DeploymentError(f"secret 值格式无效：{name}。")
+        raise DeploymentError(f"密钥值格式无效：{name}。")
     if not value:
-        raise DeploymentError(f"secret 值不能为空：{name}。")
+        raise DeploymentError(f"密钥值不能为空：{name}。")
     # Docker Compose mounts file-backed secrets with their host file mode.  The
     # bridge runs as an unprivileged UID, while the enclosing secrets directory
     # remains 0700, so the file itself must be readable inside that mount.
@@ -290,7 +290,7 @@ def validate_state(lan_ip):
     reject_symlink(settings_path, "settings.json")
     try:
         if json.loads(settings_path.read_text(encoding="utf-8"))["lanIp"] != lan_ip:
-            raise DeploymentError("settings.json 的 LAN IP 与当前部署地址不一致。")
+            raise DeploymentError("settings.json 的局域网 IP 与当前部署地址不一致。")
     except DeploymentError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
@@ -325,16 +325,16 @@ def runtime_secret(variable, name):
         path = Path(file_path)
         reject_symlink(path, variable + "_FILE")
         if not path.is_file():
-            raise DeploymentError(f"缺少运行时 secret：{variable}。")
+            raise DeploymentError(f"缺少运行时密钥：{variable}。")
         try:
             return normalize_secret_content(path.read_bytes(), name)
         except OSError as error:
-            raise DeploymentError(f"无法读取运行时 secret：{variable}。") from error
+            raise DeploymentError(f"无法读取运行时密钥：{variable}。") from error
     if has_direct:
         try:
             content = direct.encode("ascii")
         except UnicodeEncodeError as error:
-            raise DeploymentError(f"运行时 secret 格式无效：{variable}。") from error
+            raise DeploymentError(f"运行时密钥 格式无效：{variable}。") from error
         return normalize_secret_content(content, name)
     return read_secret(name)
 
@@ -368,7 +368,7 @@ def request_json(opener, url, data=None, headers=None, allowed_statuses=()):
             except (ValueError, UnicodeError):
                 raise DeploymentError("健康接口返回无效 JSON。") from None
         if error.code in (401, 403):
-            raise DeploymentError("认证失败：请检查 Miloco 本地密码或 API Token；响应内容已隐藏。") from None
+            raise DeploymentError("认证失败：请检查 Miloco 本地密码或 API 令牌；响应内容已隐藏。") from None
         raise DeploymentError(f"服务请求失败（HTTP {error.code}），请查看脱敏日志。") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise DeploymentError("服务暂不可达：请检查启动状态、IP、防火墙和 TLS 配置。") from None

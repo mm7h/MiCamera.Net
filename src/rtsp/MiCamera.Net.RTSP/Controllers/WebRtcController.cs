@@ -6,14 +6,9 @@ namespace MiCamera.Net.RTSP.Controllers;
 
 [ApiController]
 [Route("api/webrtc/sessions")]
-public sealed class WebRtcController : ControllerBase
+public sealed class WebRtcController(WebRtcSessionService service) : ControllerBase
 {
-    private readonly WebRtcSessionService _service;
-
-    public WebRtcController(WebRtcSessionService service)
-    {
-        this._service = service;
-    }
+    private readonly WebRtcSessionService _service = service;
 
     [HttpPost]
     public Task<IActionResult> Create(
