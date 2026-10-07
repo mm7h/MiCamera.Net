@@ -28,7 +28,7 @@
 sudo apt-get install -y docker.io docker-buildx git python3 openssh-client
 ```
 
-Jenkins创建 inbound 节点后，从 `/jnlpJars/agent.jar` 下载其 agent，并把连接 secret 存入 `/home/hang/jenkins-agent/agent.secret`，目录权限0700、secret权限0600，由 `hang` 持有。不要把值写入仓库或命令历史。然后安装本目录的 systemd unit：
+Jenkins创建 inbound 节点后，从 `/jnlpJars/agent.jar` 下载其 agent，并把连接 secret 存入 `/home/hang/jenkins-agent/agent.secret`，目录权限0700、secret权限0600，由 `hang` 持有。构建进程使用 `UMask=0022`，使 Git 文件经 Docker COPY 后仍可由容器中的非 root 用户读取；凭据依靠上述目录及文件权限保护。不要把值写入仓库或命令历史。然后安装本目录的 systemd unit：
 
 ```bash
 sudo install -m 0644 deployment/jenkins/micamera-jenkins-agent.service /etc/systemd/system/
