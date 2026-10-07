@@ -13,7 +13,9 @@
 
 </div>
 
-**MiCamera.Net** 是使用 **.NET 8** 开发的小米摄像头视频桥接 SDK 与服务。它连接 **Miloco** 获取 H.264/H.265 视频，为多个摄像头通道提供 **RTSP 直播、WebRTC 浏览器预览和 JPEG 截图**，附带控制台宿主与 React 前端示例。
+**MiCamera.Net** 是使用 **.NET 8** 开发的小米摄像头视频桥接 SDK 与服务。它连接 **Miloco** 获取 H.264/H.265 视频，为多个摄像头通道提供 **RTSP 直播、WebRTC 浏览器预览和 JPEG 截图** 功能。
+
+![项目预览图](./docs/assets/02_system_preview.png)
 
 ## 文档导航 📚
 
