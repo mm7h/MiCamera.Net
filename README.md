@@ -7,7 +7,7 @@
 
 [![.NET](https://img.shields.io/badge/.NET-8.0-7355dd?logo=dotnet)](https://dotnet.microsoft.com/)
 [![Issues](https://img.shields.io/github/issues/mm7h/MiCamera.Net)](https://github.com/mm7h/MiCamera.Net/issues)
-[![License](https://img.shields.io/github/license/mm7h/MiCamera.Net)](./LICENSE)
+[![License](https://img.shields.io/github/license/mm7h/MiCamera.Net?logo=mit)](./LICENSE)
 
 </p>
 
@@ -27,8 +27,6 @@
 | HTTP/RTSP 接口与 .NET SDK 接入 | [🔌 接口与 SDK 接入](docs/03-接口与SDK接入.md) |
 | 从源码开发、构建镜像和生成完整包 | [🛠️ 源码开发与构建包](docs/04-源码开发与构建包.md) |
 | 登录、黑屏、连接失败与卡顿 | [🔍 故障排查](docs/05-故障排查.md) |
-| 已验证的部署能力及剩余验证范围 | [✅ 部署验收记录](docs/DEPLOYMENT_VERIFICATION.md) |
-| 特定服务器的性能测量与历史分析 | [📊 服务器性能记录](docs/SERVER_PERFORMANCE.md) |
 
 ## 功能清单 ✨
 
