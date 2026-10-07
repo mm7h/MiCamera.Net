@@ -49,7 +49,6 @@ services:
     network_mode: host
     environment:
       TZ: Asia/Shanghai
-      MICAMERA_DATA_DIRECTORY: /run/micamera-state
     configs:
       - source: micamera_config
         target: /run/configs/MiCameraConfig.json
@@ -62,7 +61,7 @@ services:
           create_host_path: false
       - type: bind
         source: .deploy/micamera-state
-        target: /run/micamera-state
+        target: /app/data
         bind:
           create_host_path: false
     secrets:

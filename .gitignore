@@ -19,3 +19,4 @@ AGENTS.md
 /.deploy/
 **/__pycache__/
 /deployment/build_output/
+/deployment/jenkins/
