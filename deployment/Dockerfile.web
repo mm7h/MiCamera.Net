@@ -2,7 +2,7 @@
 # the final Nginx stage still uses the requested target platform.
 ARG NODE_IMAGE=node:22-bookworm-slim
 ARG NGINX_IMAGE=nginx:stable-alpine
-FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS dependencies
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ENV NPM_CONFIG_ENGINE_STRICT=true
 # The deployed frontend is served by the Nginx proxy above /api, so it defaults to
@@ -11,6 +11,8 @@ ENV VITE_MICAMERA_SAME_ORIGIN_API=true
 WORKDIR /web
 COPY demo/MiCamera.Net.Sample.Web/package.json demo/MiCamera.Net.Sample.Web/package-lock.json ./
 RUN npm ci --registry=${NPM_REGISTRY}
+
+FROM dependencies AS build
 COPY demo/MiCamera.Net.Sample.Web/ ./
 RUN npm run lint && npm run build
 

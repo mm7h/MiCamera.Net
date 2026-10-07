@@ -1,14 +1,20 @@
 ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim
 ARG RUNTIME_IMAGE=debian:trixie-slim
-FROM --platform=$BUILDPLATFORM ${DOTNET_SDK_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${DOTNET_SDK_IMAGE} AS dependencies
 ARG TARGETARCH
 ARG NUGET_SOURCE=https://mirrors.huaweicloud.com/repository/nuget/v3/index.json
 WORKDIR /source
 COPY src/ src/
 COPY demo/MiCamera.Net.Sample.Server/ demo/MiCamera.Net.Sample.Server/
 RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac; \
+    dotnet restore demo/MiCamera.Net.Sample.Server/MiCamera.Net.Sample.Server.csproj \
+    -r "linux-$arch" -p:SelfContained=true --source "$NUGET_SOURCE"
+
+FROM dependencies AS build
+ARG TARGETARCH
+RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac; \
     dotnet publish demo/MiCamera.Net.Sample.Server/MiCamera.Net.Sample.Server.csproj \
-    -c Release -r "linux-$arch" --self-contained true -p:UseAppHost=true --source "$NUGET_SOURCE" -o /out
+    -c Release -r "linux-$arch" --self-contained true -p:UseAppHost=true --no-restore -o /out
 # A production container must receive its configuration through a read-only runtime mount.
 RUN rm -f /out/Configs/MiCameraConfig.json
 RUN mkdir -p /out/licenses && cp /root/.nuget/packages/sipsorcery/10.0.17/LICENSE.md /out/licenses/SIPSorcery-LICENSE.md

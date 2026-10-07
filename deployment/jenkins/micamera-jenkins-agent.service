@@ -1,0 +1,18 @@
+[Unit]
+Description=MiCamera.Net Jenkins build agent on 102
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+User=hang
+Group=hang
+SupplementaryGroups=docker
+WorkingDirectory=/home/hang/jenkins-agent
+UMask=0077
+ExecStart=/usr/bin/java -jar /home/hang/jenkins-agent/agent.jar -url http://192.168.3.102/ -secret @/home/hang/jenkins-agent/agent.secret -name micamera-build -webSocket -workDir /home/hang/jenkins-agent
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

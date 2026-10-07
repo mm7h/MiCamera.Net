@@ -1,0 +1,69 @@
+pipeline {
+    agent { label 'micamera-build' }
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+    parameters {
+        string(name: 'CONFIRM_RESET', defaultValue: '', description: 'Type MiCamera.Net to reset ALL application credentials, camera configuration and local Xiaomi authorization on 192.168.3.104.')
+    }
+    stages {
+        stage('Validate Request') {
+            steps {
+                script {
+                    if (params.CONFIRM_RESET != 'MiCamera.Net') {
+                        error('Reset cancelled: CONFIRM_RESET must be MiCamera.Net.')
+                    }
+                }
+            }
+        }
+        stage('Clean') {
+            steps { deleteDir() }
+        }
+        stage('Pull Code') {
+            steps {
+                checkout scm
+                sh 'test "$(git branch --show-current)" = develop || test "$(git rev-parse HEAD)" = "$(git rev-parse origin/develop)"'
+            }
+        }
+        stage('Prepare Reset Package') {
+            steps {
+                withEnv(["CONFIRM_RESET=${params.CONFIRM_RESET}"]) {
+                    sh 'python3 deployment/jenkins/ci.py reset export'
+                }
+            }
+        }
+        stage('Upload Reset Package') {
+            steps {
+                withEnv(["CONFIRM_RESET=${params.CONFIRM_RESET}"]) {
+                    withCredentials([
+                        sshUserPrivateKey(credentialsId: 'micamera-deploy-104', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                        file(credentialsId: 'micamera-deploy-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                    ]) {
+                        sh 'python3 deployment/jenkins/ci.py reset upload'
+                    }
+                }
+            }
+        }
+        stage('Reset Deployment') {
+            steps {
+                withEnv(["CONFIRM_RESET=${params.CONFIRM_RESET}"]) {
+                    withCredentials([
+                        sshUserPrivateKey(credentialsId: 'micamera-deploy-104', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                        file(credentialsId: 'micamera-deploy-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                    ]) {
+                        sh 'python3 deployment/jenkins/ci.py reset run'
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            archiveArtifacts(artifacts: 'deployment/build_output/jenkins/manifest.json,deployment/build_output/jenkins/SHA256SUMS', allowEmptyArchive: true)
+        }
+    }
+}
