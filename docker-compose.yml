@@ -1,0 +1,111 @@
+name: micamera-net
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  miloco:
+    image: ghcr.io/miiot/miloco:260618@sha256:1627132b4364feea0a60d2c880bacdbea614904a04ec2d4d457143d2fb5f7b68
+    # Keep authorization/raw video; MiCamera.Net owns JPEG snapshots and transcoding.
+    entrypoint: ["python3", "/opt/micamera/miloco-entrypoint.py"]
+    network_mode: host
+    environment:
+      BACKEND_HOST: ${LAN_IP:?Run bash deploy.sh first}
+      BACKEND_PORT: "8000"
+      BACKEND_LOG_LEVEL: warning
+      SECRET_KEY_FILE: /run/secrets/miloco_jwt_secret
+      TZ: Asia/Shanghai
+    secrets:
+      - miloco_jwt_secret
+    volumes:
+      - type: bind
+        source: ./deployment/miloco-entrypoint.py
+        target: /opt/micamera/miloco-entrypoint.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: .deploy/miloco
+        target: /app/miloco_server/.temp
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,socket; s=socket.create_connection((os.environ['BACKEND_HOST'],8000),3); s.close()"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 4
+
+  bridge:
+    image: ${MICAMERA_BRIDGE_IMAGE:-micamera-net-bridge:local}
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.bridge
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+    configs:
+      - source: micamera_config
+        target: /run/configs/MiCameraConfig.json
+    volumes:
+      - type: bind
+        source: .deploy/miloco/cert/cert.pem
+        target: /run/configs/miloco-server-cert.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: .deploy/micamera-state
+        target: /app/data
+        bind:
+          create_host_path: false
+    secrets:
+      - rtsp_api_token
+    depends_on:
+      miloco:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      # helper.py needs the API base URL and Token file, which are not service environment
+      # values; passing them inline keeps the container environment unchanged.
+      test: ["CMD-SHELL", "RTSP_HTTP_LISTEN_URL=http://${LAN_IP}:5080 RTSP_API_TOKEN_FILE=/run/secrets/rtsp_api_token python3 /app/deployment/helper.py live"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  web:
+    image: ${MICAMERA_WEB_IMAGE:-micamera-net-web:local}
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.web
+    ports:
+      - "${LAN_IP}:5081:8080"
+    environment:
+      MICAMERA_LAN_IP: ${LAN_IP:?Run bash deploy.sh first}
+      RTSP_API_TOKEN_FILE: /run/secrets/rtsp_api_token
+    secrets:
+      - rtsp_api_token
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+configs:
+  micamera_config:
+    file: .deploy/MiCameraConfig.json
+
+secrets:
+  miloco_jwt_secret:
+    file: .deploy/secrets/miloco_jwt_secret
+  rtsp_api_token:
+    file: .deploy/secrets/rtsp_api_token

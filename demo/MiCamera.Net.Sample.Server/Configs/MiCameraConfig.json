@@ -1,0 +1,50 @@
+{
+  "Miloco": {
+    "AllowInvalidServerCertificate": true, //是否跳过 Miloco HTTPS 证书校验
+    "RequestTimeout": 15
+  },
+  "Streaming": {
+    "ConnectTimeout": 10, //WebSocket 建连超时秒数
+    "FirstKeyFrameTimeout": 60, //连接成功后等待第一个关键帧的最长秒数；超时会重连
+    "IdleTimeout": 60, //已连接但长期未收到视频数据时的超时秒数；超时会重连
+    "MaxMessageBytes": 4194304, //单个 WebSocket 视频消息可接受的最大字节数；用于防止异常大包耗尽内存
+    "SubscriberBufferCapacity": 32 //每个下游订阅者的视频缓冲块数；过小容易丢帧，过大增加内存和延迟，最低为 4
+  },
+  "Reconnect": {
+    "InitialDelay": 1, //首次重连等待秒数
+    "MaximumDelay": 30, //指数退避后的最大重连等待秒数
+    "BackoffMultiplier": 2.0, //每次失败后延迟乘数；2 表示 1、2、4、8… 秒
+    "JitterRatio": 0.2 //重连延迟的随机扰动比例；0.2 即上下浮动约 20%，避免多路流同时重连
+  },
+  "MediaServer": {
+    "ListenAddress": "http://localhost:5080", //HTTP API 监听地址；非回环监听必须配置 BearerToken
+    "AllowedOrigins": [ "http://localhost:5081" ],
+    "FFmpeg": {
+      "Path": "./ffmpeg", //FFmpeg 7.1路径
+      "H264EncoderName": "libx264",
+      "H264Bitrate": 2500000,
+      "H264Preset": "veryfast",
+      "KeyFrameInterval": 2
+    },
+    "Rtsp": {
+      "ListenAddress": "127.0.0.1",
+      "Port": 8554,
+      "PathPrefix": "/live", // 流地址的公共前缀，与 StreamId 拼成 rtsp://{ip}:{port}/live/living-room
+      "RtpMtu": 1200, // 单个 RTP 包的大小上限，单位为字节。大视频数据会拆成多个 RTP 包。它不是分辨率或码率
+      "SessionTimeout": 60 // RTSP 控制通道的空闲超时。客户端长时间不发送请求或保活消息，会被断开
+    },
+    "WebRtc": {
+      "Enabled": true,
+      "IceGatheringTimeout": 5,
+      "PendingSessionTimeout": 30,
+      "DisconnectedGracePeriod": 15,
+      "PlayoutDelay": 1.2, // 发送时钟前预留的秒数：吸收中继的成串交付，越大越连续、延迟越高
+      "TranscoderIdleTimeout": 10,
+      "MaxPeersPerStream": 4
+    },
+    "Snapshot": {
+      "Enabled": true, // 开启后可以通过 HTTP API 获取摄像头快照图片
+      "JpegQuality": 85 // JPEG 质量，范围 1–100。越高通常越清晰、文件越大，不影响 RTSP/WebRTC 视频质量
+    }
+  }
+}

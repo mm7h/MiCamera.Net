@@ -1,0 +1,6 @@
+﻿using MiCamera.Net.RTSP.Abstractions.Media;
+
+namespace MiCamera.Net.RTSP.Abstractions.Web;
+
+public sealed record HealthResponse(bool Ready, bool MediaAvailable, IReadOnlyList<StreamHealthResponse> Streams,
+    bool MediaReady = false, bool RtspConfigured = false, bool RtspListening = false);

@@ -1,0 +1,46 @@
+ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim
+ARG RUNTIME_IMAGE=debian:trixie-slim
+FROM --platform=$BUILDPLATFORM ${DOTNET_SDK_IMAGE} AS dependencies
+ARG TARGETARCH
+ARG NUGET_SOURCE=https://mirrors.huaweicloud.com/repository/nuget/v3/index.json
+WORKDIR /source
+COPY src/ src/
+COPY demo/MiCamera.Net.Sample.Server/ demo/MiCamera.Net.Sample.Server/
+RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac; \
+    dotnet restore demo/MiCamera.Net.Sample.Server/MiCamera.Net.Sample.Server.csproj \
+    -r "linux-$arch" -p:SelfContained=true --source "$NUGET_SOURCE"
+
+FROM dependencies AS build
+ARG TARGETARCH
+RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac; \
+    dotnet publish demo/MiCamera.Net.Sample.Server/MiCamera.Net.Sample.Server.csproj \
+    -c Release -r "linux-$arch" --self-contained true -p:UseAppHost=true --no-restore -o /out
+# A production container must receive its configuration through a read-only runtime mount.
+RUN rm -f /out/Configs/MiCameraConfig.json
+RUN mkdir -p /out/licenses && cp /root/.nuget/packages/sipsorcery/10.0.17/LICENSE.md /out/licenses/SIPSorcery-LICENSE.md
+
+FROM ${RUNTIME_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    PYTHONDONTWRITEBYTECODE=1
+# The target LAN blocks deb.debian.org but permits this signed Debian mirror.
+RUN sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+    attempt=1; \
+    until apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl ffmpeg python3 libicu76 libssl3t64 libstdc++6 libgcc-s1 tzdata; do \
+        if [ "$attempt" -ge 3 ]; then exit 1; fi; \
+        attempt=$((attempt + 1)); \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /out/ ./
+COPY deployment/helper.py deployment/helper.py
+COPY LICENSE /app/licenses/MiCamera.Net-LICENSE
+COPY deployment/THIRD-PARTY-NOTICES.md /app/licenses/THIRD-PARTY-NOTICES.md
+RUN set -eu; case "$(dpkg --print-architecture)" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac; \
+    ln -s "/usr/lib/$triplet" /app/native; \
+    mkdir -p /app/Configs
+COPY deployment/bridge-entrypoint.py /app/deployment/bridge-entrypoint.py
+USER 10001:10001
+ENTRYPOINT ["python3", "/app/deployment/bridge-entrypoint.py"]

@@ -1,0 +1,12 @@
+# Sourced by the official Nginx image entrypoint before conf templates are rendered.
+# Exports the bridge API coordinates used by /etc/nginx/templates/default.conf.template.
+# The Bearer Token is read from the Compose secret, so it stays outside the image.
+: "${MICAMERA_LAN_IP:=127.0.0.1}"
+_micamera_token_file="${RTSP_API_TOKEN_FILE:-/run/secrets/rtsp_api_token}"
+if [ -f "$_micamera_token_file" ]; then
+    MICAMERA_API_TOKEN="$(cat "$_micamera_token_file")"
+else
+    MICAMERA_API_TOKEN=""
+fi
+export MICAMERA_LAN_IP MICAMERA_API_TOKEN
+unset _micamera_token_file
