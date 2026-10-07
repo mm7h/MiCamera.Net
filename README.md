@@ -28,48 +28,6 @@
 | 已验证的部署能力及剩余验证范围 | [✅ 部署验收记录](docs/DEPLOYMENT_VERIFICATION.md) |
 | 特定服务器的性能测量与历史分析 | [📊 服务器性能记录](docs/SERVER_PERFORMANCE.md) |
 
-## 快速开始 👋
-
-推荐从源码自行生成完整部署包，再部署到 Linux 服务器；已有 Release 包时可直接下载使用。运行服务器无需安装 Python、Node.js 或 .NET，**Miloco 首次拉取与小米账号授权仍需联网**。
-
-### 一、项目配置
-
-准备与摄像头互通的 **Linux amd64/arm64** 服务器，安装 Docker Engine、Compose v2.20+、Bash 4+、iproute2、awk、coreutils 和 util-linux。建议固定服务器局域网 IP，使用可信家庭网络。
-
-配置采用 `Miloco`、`Streaming`、`Reconnect`、`MediaServer` 四个顶层段，摄像头列表位于 `MediaServer.Rtsp.Streams`。部署向导会生成 `.deploy/MiCameraConfig.json`、独立 secrets 和持久化目录，并引导授权、选流；首次部署无需手工填写带密码的 JSON。
-
-手动配置、SDK 接入或迁移旧部署前，请阅读 [配置文件参考](docs/00-配置文件参考.md)。
-
-### 二、下载镜像
-
-前往 **[GitHub Releases 下载构建包](https://github.com/mm7h/MiCamera.Net/releases)**，选择目标版本的 `micamera-net-<版本>-linux-amd64.tar.gz` 或 `linux-arm64.tar.gz`，同时下载对应 `.sha256`。构建包包含桥接和前端镜像，不包含 **Miloco** 镜像。
-
-**推荐自行构建**：在具备 Python 3.13.2（本机使用版本）、Docker 和 buildx 的构建机器上获取源码，在仓库根目录执行，例如生成 amd64 包：
-
-```bash
-python3 --version
-python3 deployment/build-package.py local-build --arch amd64
-```
-
-产物位于 `deployment/build_output/`。ARM64、双架构构建、Windows 构建及依赖要求见 [完整构建包指南](docs/04-源码开发与构建包.md)。Release 尚无对应资产时使用此方式。
-
-### 三、服务器部署并运行
-
-将归档和校验文件复制到 Linux 服务器。以下以自行构建的 amd64 包为例，版本和架构按实际文件替换：
-
-```bash
-sha256sum -c micamera-net-local-build-linux-amd64.tar.gz.sha256
-tar -xzf micamera-net-local-build-linux-amd64.tar.gz
-cd micamera-net-local-build-linux-amd64
-bash deploy.sh
-```
-
-跟随中文向导选择 IP，在 `https://服务器IP:8000` 设置 Miloco 本地密码并绑定小米账号；回到终端隐藏输入 **Miloco 本地密码**，选择摄像头后启动服务。
-
-首次打开 **`http://服务器IP:5081`**，填写 RTSP 用户名、密码和确认密码，再启动浏览器预览。设置前 RTSP 端口关闭，保存后立即启用。播放器使用 `rtsp://服务器IP:8554/live/流名称`，选择 **RTSP over TCP**，在认证界面输入刚设置的凭据。前端代理自动附加 API Token，浏览器无需输入。
-
-完整环境、端口、非交互部署、升级与恢复步骤见 [桥接服务部署](docs/01-桥接服务部署.md)。在服务器源码目录直接执行 `bash deploy.sh` 也可本地构建部署，但不会生成完整归档。
-
 ## 功能清单 ✨
 
 ### 已实现 ✅
