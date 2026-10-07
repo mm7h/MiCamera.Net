@@ -110,6 +110,13 @@ bash deploy.sh
 | [SIPSorcery](https://github.com/sipsorcery-org/sipsorcery) | WebRTC peer、ICE、DTLS、SRTP 与 RTP/RTCP 基础能力 |
 | [SharpRTSP](https://github.com/ngraziano/SharpRTSP) | 项目使用的 RTSP/RTP 相关依赖 |
 
+## 免责声明 ✍️
+
+**适用范围** 本项目为开源非营利项目，仅供学术研究或个人测试用途。严禁用于商业服务、网络攻击、数据窃取、系统破坏等违反《网络安全法》及使用者所在地司法管辖区的法律规定的场景。
+
+**非官方声明** 本项目由第三方开发者独立开发，与小米集团及其关联方（下称"权利方"）无任何隶属/合作关系，亦未获其官方授权/认可或技术支持。项目中涉及的商标、[Miloco 镜像固件](https://github.com/XiaoMi/xiaomi-miloco)、云服务的所有权利归属小米集团。若权利方主张权益，使用者应立即主动停止使用并删除本项目。
+
+继续下载或运行本项目，即表示您已完整阅读并同意用户协议，否则请立即终止使用并彻底删除本项目。
 
 ## 许可证 📝
 
