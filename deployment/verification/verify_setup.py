@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PIN = "001234"
 SECRET = "setup-test-password"
 TOKEN = "setup-test-api-token"
