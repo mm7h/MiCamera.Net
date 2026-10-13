@@ -274,6 +274,28 @@ class ReleaseTests(unittest.TestCase):
 
 
 class GitAndApiTests(unittest.TestCase):
+    def test_release_finds_draft_when_by_tag_returns_404(self):
+        draft = {"id": 123, "tag_name": "0.2.0", "draft": True}
+        first_page = [{"tag_name": f"other-{index}"} for index in range(100)]
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "example/repo"}), \
+                patch.object(release, "api", side_effect=[None, first_page, [draft]]) as api:
+            self.assertEqual(release.release("0.2.0"), draft)
+            self.assertEqual(api.call_args_list[-1].args[0],
+                             "/repos/example/repo/releases?per_page=100&page=2")
+
+    def test_release_uses_published_lookup_and_does_not_list(self):
+        published = {"id": 124, "tag_name": "0.1.0", "draft": False}
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "example/repo"}), \
+                patch.object(release, "api", return_value=published) as api:
+            self.assertEqual(release.release("0.1.0"), published)
+            api.assert_called_once_with("/repos/example/repo/releases/tags/0.1.0", missing_ok=True)
+
+    def test_release_absent_only_after_authenticated_listing(self):
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "example/repo"}), \
+                patch.object(release, "api", side_effect=[None, []]) as api:
+            self.assertIsNone(release.release("missing"))
+            self.assertEqual(api.call_count, 2)
+
     def test_shanghai_date_does_not_depend_on_runner_timezone(self):
         # 2026-10-12 16:30 UTC is already October 13 in Shanghai.
         with patch.object(release, "capture", return_value="1791822600"):

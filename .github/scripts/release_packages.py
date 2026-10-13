@@ -48,7 +48,20 @@ def api(path, missing_ok=False):
 
 def release(tag):
     repo = os.environ["GITHUB_REPOSITORY"]
-    return api(f"/repos/{repo}/releases/tags/{quote(tag, safe='')}", missing_ok=True)
+    document = api(f"/repos/{repo}/releases/tags/{quote(tag, safe='')}", missing_ok=True)
+    if document is not None:
+        return document
+    # The by-tag endpoint only finds published releases. Authenticated release
+    # listings also include drafts, whose pending tag must be matched explicitly.
+    page = 1
+    while True:
+        batch = api(f"/repos/{repo}/releases?per_page=100&page={page}")
+        for document in batch:
+            if document["tag_name"] == tag:
+                return document
+        if len(batch) < 100:
+            return None
+        page += 1
 
 
 def require_draft(document):
