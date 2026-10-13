@@ -1,7 +1,10 @@
 name: Build release packages
-run-name: Prepare release packages for ${{ inputs.tag }}
+run-name: Prepare release packages for ${{ inputs.tag || github.ref_name }}
 
 on:
+  push:
+    tags:
+      - 'ci-release-test-*'
   workflow_dispatch:
     inputs:
       tag:
@@ -17,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-packages-${{ inputs.tag }}
+  group: release-packages-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -45,7 +48,7 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: python .github/scripts/release_packages.py prepare
 
   build:
@@ -119,8 +122,8 @@ jobs:
       - name: Verify and upload to release draft
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
           PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
-          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_PRERELEASE: ${{ github.event_name == 'push' || inputs.prerelease }}
         run: python .github/scripts/release_packages.py publish --directory release-assets
