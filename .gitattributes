@@ -4,4 +4,5 @@ Dockerfile* text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 deployment/*.py text eol=lf
+.github/scripts/*.py text eol=lf
 deployment/*.conf text eol=lf
